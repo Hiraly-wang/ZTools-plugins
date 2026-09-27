@@ -1,0 +1,7 @@
+# 测试生成物（由 tools/build-harness.py 重新生成）
+tests/ui-harness.html
+# 打包产物
+*.zpx
+# 系统垃圾
+.DS_Store
+Thumbs.db

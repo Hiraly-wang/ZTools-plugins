@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>天气助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="topbar">
+  <header class="bar">
+    <div class="brand">
+      <img src="logo.png" alt="logo">
+      <b>天气助手</b>
+    </div>
+    <div class="acts">
+      <button id="refresh" title="立即刷新当前城市">⟳ 刷新</button>
+      <button id="settings" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <div class="searchwrap">
+    <div class="searchbox">
+      <span class="sicon">🔍</span>
+      <input id="q" type="search" placeholder="搜城市：中文 / 拼音 / 首字母，如 成都 · chengdu · cd"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <button id="q-clear" class="qclear" title="清空" hidden>✕</button>
+    </div>
+    <div id="results" class="results" hidden></div>
+    <div id="hint" class="hint">输入即筛选 · ↑↓ 选择 · Enter 添加 · Esc 关闭</div>
+  </div>
+
+  <nav id="cities" class="cities"></nav>
+  </div>
+
+  <main id="view">
+    <section id="now-card" class="now">
+      <div class="now-left">
+        <div class="now-temp"><span id="cur-temp">--</span><i id="cur-unit">°C</i></div>
+        <div id="cur-text" class="now-text">--</div>
+        <div id="cur-city" class="now-city">正在载入…</div>
+        <div id="cur-meta" class="now-meta"></div>
+      </div>
+      <div class="now-right">
+        <div id="cur-icon" class="now-icon">🌡️</div>
+        <div id="cur-updated" class="muted small"></div>
+        <div class="now-actions">
+          <button id="copy" class="ghost" title="复制当前天气文本">复制</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="card-h"><span>空气质量</span><span id="aqi-badge" class="badge">--</span></div>
+        <div id="aqi-main" class="aqi-main">--</div>
+        <div id="aqi-parts" class="chips"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><span>今日概况</span></div>
+        <div id="today-grid" class="kv"></div>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <div class="card-h"><span>未来 24 小时</span><span class="muted small">实心=温度 · 柱高=降水概率</span></div>
+      <div id="hours" class="hours"></div>
+      <svg id="hour-chart" class="chart" viewBox="0 0 960 150" preserveAspectRatio="none" aria-label="24 小时温度与降水概率"></svg>
+    </section>
+
+    <section class="card wide">
+      <div class="card-h"><span>未来 7 天</span></div>
+      <div id="days" class="days"></div>
+      <svg id="day-chart" class="chart" viewBox="0 0 960 120" preserveAspectRatio="none" aria-label="7 天最高最低温"></svg>
+    </section>
+  </main>
+
+  <div id="empty" class="empty" hidden>
+    <div class="empty-icon">🌤️</div>
+    <p>还没有添加城市</p>
+    <p class="muted small">在上方搜索城市名（支持中文），或点「添加」后选一个。</p>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="settings-mask" class="mask" hidden></div>
+  <div id="settings-panel" class="dlg" hidden role="dialog" aria-modal="true" aria-label="设置">
+    <div class="dlg-h">
+      <b>设置</b>
+      <button id="s-x" class="dlg-x" title="关闭">✕</button>
+    </div>
+    <div class="dlg-b">
+      <div class="grp">
+        <div class="grp-t">显示</div>
+        <label class="row"><span class="lb">温度单位</span>
+          <div class="seg" id="s-temp" data-v="C">
+            <button data-v="C" class="on">°C 摄氏度</button><button data-v="F">°F 华氏度</button>
+          </div>
+        </label>
+        <label class="row"><span class="lb">风速单位</span>
+          <div class="seg" id="s-wind" data-v="kmh">
+            <button data-v="kmh" class="on">km/h</button><button data-v="ms">m/s</button><button data-v="mph">mph</button>
+          </div>
+        </label>
+      </div>
+      <div class="grp">
+        <div class="grp-t">刷新</div>
+        <label class="row"><span class="lb">自动刷新</span>
+          <div class="seg" id="s-refresh" data-v="5">
+            <button data-v="0">关闭</button><button data-v="5" class="on">5 分钟</button><button data-v="10">10 分钟</button><button data-v="30">30 分钟</button><button data-v="60">1 小时</button>
+          </div>
+        </label>
+      </div>
+      <p class="note">数据来自 Open-Meteo 开放接口，无需注册与 API Key。城市列表与天气缓存只保存在本机，不上传任何信息。</p>
+    </div>
+    <div class="dlg-f">
+      <button id="s-cancel" class="sec">取消</button>
+      <button id="s-close" class="primary">保存</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
