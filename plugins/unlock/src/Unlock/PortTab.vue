@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { PortInfo } from '../env'
+import type { PortInfo, WhyInfo, MessageLevel } from '../env'
 
 const props = defineProps<{
   addLog: (msg: string) => void
@@ -10,13 +10,40 @@ const props = defineProps<{
 const port = ref<number | string>('')
 const entries = ref<PortInfo[]>([])
 const loading = ref('')
-const error = ref('')
+const status = ref<{ text: string; level: MessageLevel } | null>(null)
+
+function showStatus(text: string, level: MessageLevel) {
+  status.value = { text: text, level: level }
+}
+
+function sourceLabel(why?: WhyInfo): string {
+  if (!why) return ''
+  if (why.sourceLine) return why.sourceLine
+  if (!why.source) return ''
+  const t = why.source.type || 'unknown'
+  const n = why.source.name || ''
+  const map: Record<string, string> = {
+    windows_service: 'Windows 服务',
+    shell: '交互式 Shell',
+    init: '系统进程',
+    cron: '计划任务',
+    container: '容器',
+    supervisor: '守护进程',
+    ssh: 'SSH 会话',
+    unknown: '未知来源'
+  }
+  const label = map[t] || t
+  return n ? n + '（' + label + '）' : label
+}
 
 async function handleScan() {
   var portNum = parseInt(String(port.value), 10)
-  if (isNaN(portNum) || portNum < 1 || portNum > 65535) { error.value = '请输入有效端口 (1-65535)'; return }
-  loading.value = '正在扫描端口 ' + portNum + '...'
-  error.value = ''
+  if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+    showStatus('请输入 1 - 65535 之间的端口号。', 'warning')
+    return
+  }
+  loading.value = '正在检查端口 ' + portNum + ' …'
+  status.value = null
   entries.value = []
   props.addLog('端口扫描: ' + portNum)
   try {
@@ -24,63 +51,55 @@ async function handleScan() {
     props.flushDebugLog()
     entries.value = result
     props.addLog('找到 ' + result.length + ' 条记录')
-    if (result.length === 0) error.value = '没有进程监听端口 ' + portNum
+    result.forEach(function (e) {
+      if (e.why && e.why.ancestryText) props.addLog('  启动链 ' + e.processName + ': ' + e.why.ancestryText)
+    })
+    if (result.length === 0) {
+      showStatus('端口 ' + portNum + ' 当前没有程序在监听，可以放心使用。', 'success')
+    } else {
+      showStatus('端口 ' + portNum + ' 正被 ' + result.length + ' 条连接占用。结束监听进程前请先确认它们可以安全关闭。', 'info')
+    }
   } catch (err: any) {
     props.flushDebugLog()
-    error.value = err.message || '扫描失败'
-    props.addLog('错误: ' + error.value)
+    showStatus(err.message || '检查失败，请重试。', 'error')
+    props.addLog('错误: ' + (err.message || err))
   } finally { loading.value = '' }
 }
 
 async function handleKill(entry: PortInfo) {
-  loading.value = '正在结束 PID:' + entry.pid + '...'
-  props.addLog('端口结束: ' + entry.processName + ' PID:' + entry.pid)
+  loading.value = '正在结束「' + entry.processName + '」…'
+  props.addLog('结束进程: ' + entry.processName + ' (PID ' + entry.pid + ')')
   try {
-    var result = await window.services.killProcess(entry.pid)
+    var result = await window.services.killPortProcess(parseInt(String(port.value), 10), entry.pid, entry.processName)
     props.flushDebugLog()
+    showStatus(result.message, result.level || 'info')
     props.addLog('结束结果: ' + result.message)
     window.ztools.showNotification(result.message)
-    if (result.success) { await handleScan() }
-    else { error.value = result.message }
+    if (result.success) await handleScan()
   } catch (err: any) {
     props.flushDebugLog()
-    error.value = err.message || '结束失败'
-    props.addLog('结束出错: ' + error.value)
+    showStatus(err.message || '结束进程失败，请重试。', 'error')
+    props.addLog('结束出错: ' + (err.message || err))
   } finally { loading.value = '' }
 }
 
 async function handleKillAll() {
   if (entries.value.length === 0) return
   const uniquePids = Array.from(new Set(entries.value.map(e => e.pid)))
-  const count = uniquePids.length
-  loading.value = '正在结束全部 ' + count + ' 个进程...'
-  props.addLog('一键结束: ' + count + ' 个进程')
-
-  const results: { success: boolean; message: string }[] = []
-  for (const pid of uniquePids) {
-    try {
-      const result = await window.services.killProcess(pid)
-      results.push(result)
-      props.addLog('已结束 PID ' + pid + ': ' + (result.success ? '成功' : '失败'))
-    } catch (err: any) {
-      results.push({ success: false, message: err.message || '结束失败' })
-      props.addLog('结束 PID ' + pid + ' 出错: ' + (err.message || '未知'))
-    }
-  }
-
-  props.flushDebugLog()
-  const successCount = results.filter(r => r.success).length
-  const failCount = results.length - successCount
-
-  if (failCount === 0) {
-    window.ztools.showNotification('已结束全部 ' + successCount + ' 个进程')
-  } else {
-    window.ztools.showNotification('成功 ' + successCount + ', 失败 ' + failCount)
-    error.value = failCount + ' 个进程无法结束'
-  }
-
-  await handleScan()
-  loading.value = ''
+  loading.value = '正在结束 ' + uniquePids.length + ' 个进程…'
+  props.addLog('全部结束: ' + uniquePids.length + ' 个进程')
+  try {
+    const result = await window.services.killAllPortProcesses(parseInt(String(port.value), 10), entries.value)
+    props.flushDebugLog()
+    showStatus(result.message, result.level || 'info')
+    props.addLog('全部结束结果: ' + result.message)
+    window.ztools.showNotification(result.message)
+    if (result.success) await handleScan()
+  } catch (err: any) {
+    props.flushDebugLog()
+    showStatus(err.message || '结束进程失败，请重试。', 'error')
+    props.addLog('全部结束出错: ' + (err.message || err))
+  } finally { loading.value = '' }
 }
 </script>
 
@@ -93,28 +112,31 @@ async function handleKillAll() {
         type="number"
         min="1"
         max="65535"
-        placeholder="端口号 (如 8080)"
+        placeholder="端口号，例如 8080"
         @keyup.enter="handleScan"
       />
-      <button class="btn" @click="handleScan">扫描</button>
+      <button class="btn" @click="handleScan">检查</button>
+    </div>
+    <div class="hint-row">
+      <span class="hint-text">先看清楚端口被谁监听、它是怎么跑起来的，再决定是否结束进程</span>
     </div>
 
     <div v-if="loading" class="loading">{{ loading }}</div>
-    <div v-if="error && !loading" class="error">{{ error }}</div>
+    <div v-if="status && !loading" :class="['status', status.level]">{{ status.text }}</div>
 
     <div v-if="entries.length > 0" class="table-wrap">
       <div class="kill-all-bar">
-        <span class="count">找到 {{ entries.length }} 条记录</span>
+        <span class="count">{{ entries.length }} 条监听记录</span>
         <button
           :disabled="!!loading"
           class="kill-all-btn"
           @click="handleKillAll"
-        >一键结束全部</button>
+        >全部结束</button>
       </div>
       <table class="port-table">
         <thead>
           <tr>
-            <th>进程</th>
+            <th>进程 / 启动链</th>
             <th>PID</th>
             <th>协议</th>
             <th>状态</th>
@@ -127,6 +149,9 @@ async function handleKillAll() {
             <td>
               <div class="proc-name">{{ entry.processName }}</div>
               <div v-if="entry.exePath" class="proc-path">{{ entry.exePath }}</div>
+              <div v-if="entry.why && entry.why.ancestryText" class="why-chain" :title="entry.why.ancestryText">{{ entry.why.ancestryText }}</div>
+              <div v-if="entry.why && sourceLabel(entry.why)" class="why-source">来源：{{ sourceLabel(entry.why) }}</div>
+              <div v-if="entry.why && entry.why.workingDir" class="why-source">工作目录：{{ entry.why.workingDir }}</div>
             </td>
             <td>{{ entry.pid }}</td>
             <td><span :class="['proto', entry.protocol === 'TCP' ? 'tcp' : 'udp']">{{ entry.protocol }}</span></td>
@@ -137,7 +162,7 @@ async function handleKillAll() {
                 :disabled="!!loading"
                 class="kill-btn"
                 @click="handleKill(entry)"
-              >kill</button>
+              >结束进程</button>
             </td>
           </tr>
         </tbody>
@@ -154,8 +179,14 @@ async function handleKillAll() {
 .input[type=number]::-webkit-inner-spin-button { display: none; }
 .btn { padding: 4px 12px; border: 1px solid var(--border-color, #555); border-radius: 4px; background: transparent; cursor: pointer; font-size: 13px; color: var(--text-color, #e0e0e0); }
 .btn:hover { background: var(--hover-color, #333); }
+.hint-row { margin-top: 8px; }
+.hint-text { font-size: 12px; color: var(--text-secondary, #888); }
 .loading { margin-top: 12px; text-align: center; color: var(--text-secondary, #aaa); }
-.error { margin-top: 12px; padding: 10px; border-radius: 6px; background: #fff2f0; color: #cf1322; font-size: 13px; }
+.status { margin-top: 12px; padding: 10px 12px; border-radius: 6px; font-size: 13px; line-height: 1.6; border-left: 3px solid transparent; }
+.status.success { background: rgba(82, 196, 26, 0.12); color: #95de64; border-left-color: #52c41a; }
+.status.info { background: rgba(66, 184, 131, 0.10); color: #9fd8bd; border-left-color: #42b883; }
+.status.warning { background: rgba(250, 173, 20, 0.12); color: #ffd666; border-left-color: #faad14; }
+.status.error { background: rgba(255, 77, 79, 0.12); color: #ff9c9e; border-left-color: #ff4d4f; }
 .table-wrap { margin-top: 12px; overflow-x: auto; }
 .kill-all-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #2a2a2a; border: 1px solid #444; border-radius: 8px; margin-bottom: 8px; }
 .kill-all-bar .count { font-size: 13px; color: #aaa; }
@@ -164,13 +195,15 @@ async function handleKillAll() {
 .kill-all-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .port-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .port-table th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border-color, #444); color: var(--text-secondary, #999); font-weight: 600; font-size: 11px; letter-spacing: 0.5px; }
-.port-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-color, #333); }
+.port-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-color, #333); vertical-align: top; }
 .proc-name { font-weight: 600; }
-.proc-path { font-size: 11px; color: var(--text-secondary, #999); word-break: break-all; max-width: 200px; }
+.proc-path { font-size: 11px; color: var(--text-secondary, #999); word-break: break-all; max-width: 220px; }
+.why-chain { margin-top: 4px; font-size: 11px; font-family: ui-monospace, Consolas, monospace; color: var(--primary-color, #42b883); word-break: break-all; max-width: 280px; }
+.why-source { margin-top: 2px; font-size: 11px; color: var(--text-secondary, #888); }
 .proto { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
 .proto.tcp { background: #096dd9; color: #fff; }
 .proto.udp { background: #722ed1; color: #fff; }
-.kill-btn { padding: 4px 10px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; background: #fff1f0; color: #cf1322; }
+.kill-btn { padding: 4px 10px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; background: #fff1f0; color: #cf1322; white-space: nowrap; }
 .kill-btn:hover:not(:disabled) { background: #ffccc7; }
 .kill-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

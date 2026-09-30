@@ -115,22 +115,22 @@ function parseShredResult(raw) {
   try {
     const parsed = JSON.parse(trimmed)
     if (parsed.ok) {
-      return { success: true, message: '完成,已处理 ' + (parsed.count || 0) + ' 个文件', filesProcessed: parsed.count || 0 }
+      return { success: true, message: '已处理 ' + (parsed.count || 0) + ' 个文件', filesProcessed: parsed.count || 0 }
     }
     const errMsg = parsed.error || '未知错误'
     if (_isLockError(errMsg)) {
-      return { success: false, message: '文件被其他进程占用', locked: true, rawError: errMsg }
+      return { success: false, message: '文件正被其他程序占用', locked: true, rawError: errMsg }
     }
     if (_isPermissionError(errMsg)) {
-      return { success: false, message: '权限不足,请以管理员身份运行', locked: true, rawError: errMsg }
+      return { success: false, message: '权限不足，请以管理员身份运行 ZTools 后重试', locked: true, permissionDenied: true, rawError: errMsg }
     }
     return { success: false, message: errMsg }
   } catch (e) {
     if (_isPermissionError(trimmed)) {
-      return { success: false, message: '权限不足,请以管理员身份运行', locked: true }
+      return { success: false, message: '权限不足，请以管理员身份运行 ZTools 后重试', locked: true, permissionDenied: true }
     }
     if (_isLockError(trimmed)) {
-      return { success: false, message: '文件被其他进程占用', locked: true }
+      return { success: false, message: '文件正被其他程序占用', locked: true }
     }
     return { success: false, message: trimmed.substring(0, 200) || '未知错误' }
   }
