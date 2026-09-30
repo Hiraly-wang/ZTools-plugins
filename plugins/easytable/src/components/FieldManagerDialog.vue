@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { FieldDef, FieldType, TableSchema } from '../types/table'
-import { FIELD_TYPE_LABELS, FIELD_TYPE_OPTIONS, createField } from '../domain/fieldTypes'
+import type { FieldDef, FieldValue, FieldType, Row, TableSchema } from '../types/table'
+import { FIELD_TYPE_LABELS, FIELD_TYPE_OPTIONS, createField, collectFieldOptions } from '../domain/fieldTypes'
 import { DEFAULT_MULTI_SEP, VALUE_SPLIT_LABEL, splitMultiValue } from '../domain/separators'
 import { hasOptions } from '../types/table'
 
@@ -11,10 +11,15 @@ const props = defineProps<{
   table: TableSchema
   /** 当前表已有行数；为 0 时不提示类型变更 */
   rowCount?: number
+  /** 当前表的行数据：改类型时用它收集已有取值为选项 */
+  rows?: Row[]
 }>()
 const emit = defineEmits<{
   (e: 'update:visible', v: boolean): void
   (e: 'save', schema: TableSchema): void
+  (e: 'backfill', fieldIds: string[]): void
+  /** 字段类型变更后，请宿主按新类型转换已有行的值 */
+  (e: 'coerce', fieldIds: string[]): void
 }>()
 
 interface DraftField {
@@ -22,6 +27,8 @@ interface DraftField {
   name: string
   type: FieldType
   optionsText: string
+  /** 默认值编辑态：checkbox 用 'yes'/'no'/'none'，其余类型用文本输入 */
+  defaultText: string
   isNew?: boolean
 }
 
@@ -31,26 +38,62 @@ const showCreatedAt = ref(true)
 const showUpdatedAt = ref(true)
 
 function toDraft(f: FieldDef): DraftField {
+  const raw = f.default
+  let defaultText = ''
+  if (raw !== undefined) {
+    if (f.type === 'checkbox') defaultText = raw ? 'yes' : 'no'
+    else if (Array.isArray(raw)) defaultText = raw.join(DEFAULT_MULTI_SEP)
+    else if (raw != null) defaultText = String(raw)
+  }
   return {
     id: f.id,
     name: f.name,
     type: f.type,
-    optionsText: hasOptions(f) ? f.options.join(DEFAULT_MULTI_SEP) : ''
+    optionsText: hasOptions(f) ? f.options.join(DEFAULT_MULTI_SEP) : '',
+    defaultText
+  }
+}
+
+/** 草稿默认值 → 存储值；无输入返回 undefined（不设默认值） */
+function parseDefault(d: DraftField): FieldValue | undefined {
+  const t = d.defaultText
+  if (t === '' && d.type !== 'checkbox') return undefined
+  switch (d.type) {
+    case 'checkbox':
+      return t === 'yes' ? true : t === 'no' ? false : undefined
+    case 'multi_select':
+    case 'list':
+      return t.trim() ? splitMultiValue(t) : undefined
+    case 'number': {
+      if (t === '') return undefined
+      const n = Number(t.replace(/,/g, '').trim())
+      return Number.isFinite(n) ? n : undefined
+    }
+    case 'date': {
+      const s = t.trim()
+      if (!s) return undefined
+      // 非法日期串直接视为未设置，避免回填垃圾值
+      return /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(s) ? s : undefined
+    }
+    default:
+      return t
   }
 }
 
 function fromDraft(d: DraftField): FieldDef {
   const base = createField(d.name.trim() || '未命名', d.type)
   base.id = d.id
+  const def = parseDefault(d)
   if (d.type === 'select' || d.type === 'multi_select') {
     return {
       id: d.id,
       name: base.name,
       type: d.type,
-      options: splitMultiValue(d.optionsText)
+      options: splitMultiValue(d.optionsText),
+      ...(def !== undefined ? { default: def } : {})
     }
   }
-  return { id: d.id, name: base.name, type: d.type } as FieldDef
+  return { id: d.id, name: base.name, type: d.type, ...(def !== undefined ? { default: def } : {}) } as FieldDef
 }
 
 watch(
@@ -71,6 +114,7 @@ function addField() {
     name: `字段${fields.value.length + 1}`,
     type: 'text',
     optionsText: '',
+    defaultText: '',
     isNew: true
   })
 }
@@ -90,11 +134,58 @@ function move(idx: number, delta: number) {
 const needOptions = computed(() =>
   fields.value.map((f) => f.type === 'select' || f.type === 'multi_select')
 )
+/** 该字段是否显示默认值输入（checkbox 用三态选择，其余用文本） */
+const showDefault = computed(() =>
+  fields.value.map((f) => f.type !== 'checkbox')
+)
+const isCheckbox = computed(() => fields.value.map((f) => f.type === 'checkbox'))
 
-function onTypeChange(f: DraftField) {
-  if (f.type === 'select' || f.type === 'multi_select') {
-    if (!f.optionsText) f.optionsText = ''
+/** 用草稿的 id + 新类型构造字段定义，供「按新类型收集已有取值」使用 */
+function draftDef(d: DraftField): FieldDef {
+  return { ...createField(d.name, d.type), id: d.id } as FieldDef
+}
+
+/**
+ * 把已有行里出现过的取值合并进选项文本。
+ * ask=true 时先弹确认（切换类型时用，让用户看清会加进哪些取值）；
+ * 返回真正新增的选项个数。
+ */
+async function collectOptions(f: DraftField, ask: boolean): Promise<number> {
+  const current = splitMultiValue(f.optionsText)
+  const known = new Set(current)
+  const missing = collectFieldOptions(props.rows ?? [], draftDef(f)).filter((v) => !known.has(v))
+  if (!missing.length) return 0
+  if (ask) {
+    try {
+      await ElMessageBox.confirm(
+        `字段「${f.name.trim() || '未命名'}」在已有记录里有 ${missing.length} 个取值还没进选项：\n\n${missing.join('  ')}\n\n加入选项列表吗？（加入后下拉框里就能直接选到这些值）`,
+        '收集已有取值',
+        {
+          type: 'info',
+          confirmButtonText: '加入',
+          cancelButtonText: '不加入',
+          distinguishCancelAndClose: true
+        }
+      )
+    } catch {
+      return 0
+    }
   }
+  f.optionsText = [...current, ...missing].join(DEFAULT_MULTI_SEP)
+  return missing.length
+}
+
+/** 切换到单选/多选：把已有数据里的不同取值收进选项，省得逐条手抄 */
+async function onTypeChange(f: DraftField) {
+  if (f.type !== 'select' && f.type !== 'multi_select') return
+  await collectOptions(f, true)
+}
+
+/** 手动补收：数据是后来才出现的（导入 / 别处写入）时用 */
+async function onCollectOptions(f: DraftField) {
+  const n = await collectOptions(f, false)
+  if (n) ElMessage.success(`已收集 ${n} 个取值`)
+  else ElMessage.info('已有数据里没有新的取值')
 }
 
 async function save() {
@@ -112,6 +203,8 @@ async function save() {
     return
   }
   const nextFields = fields.value.map(fromDraft)
+  const backfillFieldIds: string[] = []
+  const coerceFieldIds: string[] = []
   const oldMap = new Map(props.table.fields.map((f) => [f.id, f]))
   // 仅当表内已有数据、且是已有字段改类型时才提示（新建表/空表直接改）
   if ((props.rowCount ?? 0) > 0) {
@@ -120,14 +213,41 @@ async function save() {
       if (old && old.type !== f.type) {
         try {
           await ElMessageBox.confirm(
-            `字段「${f.name}」类型从「${FIELD_TYPE_LABELS[old.type]}」改为「${FIELD_TYPE_LABELS[f.type]}」，已有数据将尽量转换，无法转换的会置空。继续？`,
+            `字段「${f.name}」类型从「${FIELD_TYPE_LABELS[old.type]}」改为「${FIELD_TYPE_LABELS[f.type]}」，已有数据会按新类型自动转换（文本转多选按「${VALUE_SPLIT_LABEL}」拆分，转数字/日期会重新解析），转换不了的置空。继续？`,
             '类型变更',
             { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' }
           )
         } catch {
           return
         }
+        coerceFieldIds.push(f.id)
       }
+    }
+    // 新增字段且设置了非空默认值：询问是否把默认值回填到已有数据
+    for (const f of nextFields) {
+      const old = oldMap.get(f.id)
+      if (old) continue
+      const v = f.default
+      if (v === undefined || v === null || (Array.isArray(v) && !v.length) || v === '') continue
+      let backfill = false
+      try {
+        await ElMessageBox.confirm(
+          `新字段「${f.name}」设置了默认值。要把该默认值回填到已有的 ${props.rowCount} 条记录吗？\n\n选择「不回填」则已有记录该字段保持为空（之后新增的记录会预填默认值）。`,
+          '回填默认值',
+          {
+            type: 'info',
+            confirmButtonText: '回填',
+            cancelButtonText: '不回填',
+            distinguishCancelAndClose: true,
+            closeOnClickModal: false
+          }
+        )
+        backfill = true
+      } catch (action) {
+        if (action === 'close') return // 右上角 × 视为放弃保存
+        backfill = false // 「不回填」
+      }
+      if (backfill) backfillFieldIds.push(f.id)
     }
   }
   emit('save', {
@@ -138,11 +258,30 @@ async function save() {
     showUpdatedAt: showUpdatedAt.value,
     updatedAt: Date.now()
   })
+  // 先按新类型转换已有数据，再回填新字段默认值（两者都整表写入，宿主会串行执行）
+  if (coerceFieldIds.length) emit('coerce', coerceFieldIds)
+  if (backfillFieldIds.length) emit('backfill', backfillFieldIds)
   emit('update:visible', false)
 }
 
 const typeOptions = FIELD_TYPE_OPTIONS
 const splitHint = `选项用 ${VALUE_SPLIT_LABEL} 分隔`
+
+function defaultPlaceholder(type: FieldType): string {
+  switch (type) {
+    case 'multi_select':
+    case 'list':
+      return `新行预填；多值用 ${VALUE_SPLIT_LABEL} 分隔`
+    case 'number':
+      return '新行预填数字'
+    case 'date':
+      return 'YYYY-MM-DD'
+    case 'select':
+      return '新行预填选项'
+    default:
+      return '新行预填内容'
+  }
+}
 </script>
 
 <template>
@@ -179,13 +318,34 @@ const splitHint = `选项用 ${VALUE_SPLIT_LABEL} 分隔`
           <el-button link :disabled="idx === fields.length - 1" @click="move(idx, 1)">下移</el-button>
           <el-button link type="danger" @click="removeField(idx)">删除</el-button>
         </div>
-        <el-input
-          v-if="needOptions[idx]"
-          v-model="f.optionsText"
-          :placeholder="splitHint"
-          class="options-input"
-          clearable
-        />
+        <div v-if="needOptions[idx]" class="options-row">
+          <el-input v-model="f.optionsText" :placeholder="splitHint" clearable />
+          <el-button link type="primary" class="collect-btn" @click="onCollectOptions(f)">
+            从已有数据收集
+          </el-button>
+        </div>
+        <div v-if="showDefault[idx]" class="default-row">
+          <span class="default-label">默认值</span>
+          <el-select
+            v-if="isCheckbox[idx]"
+            v-model="f.defaultText"
+            placeholder="无"
+            clearable
+            size="small"
+            class="default-input"
+          >
+            <el-option label="是（true）" value="yes" />
+            <el-option label="否（false）" value="no" />
+          </el-select>
+          <el-input
+            v-else
+            v-model="f.defaultText"
+            size="small"
+            class="default-input"
+            clearable
+            :placeholder="defaultPlaceholder(f.type)"
+          />
+        </div>
       </div>
       <el-button plain style="width: 100%" @click="addField">+ 添加字段</el-button>
     </el-form>
@@ -223,7 +383,27 @@ const splitHint = `选项用 ${VALUE_SPLIT_LABEL} 分隔`
   gap: 0;
   margin-top: 4px;
 }
-.options-input {
+.options-row {
   margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.collect-btn {
+  align-self: flex-end;
+}
+.default-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.default-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+}
+.default-input {
+  flex: 1;
 }
 </style>
