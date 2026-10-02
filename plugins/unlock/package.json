@@ -1,11 +1,14 @@
 {
   "name": "unlock-file",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "解除文件占用，以方便修改删除文件",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build"
+    "build": "vue-tsc && vite build",
+    "postinstall": "node scripts/install-witr.js",
+    "install-witr": "node scripts/install-witr.js",
+    "test": "node --test --test-concurrency=1 public/preload/*.test.js"
   },
   "dependencies": {
     "vue": "^3.5.13"

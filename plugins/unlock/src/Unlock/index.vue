@@ -60,7 +60,7 @@ function flushDebugLog() {
 function toggleDebug() { showDebug.value = !showDebug.value }
 
 onMounted(function () {
-  addLog('插件已加载')
+  addLog('插件已就绪')
   if (props.enterAction) {
     processEnterAction(props.enterAction)
   }
@@ -115,7 +115,7 @@ watch(
 
     <div v-if="logs.length > 0" class="debug-panel">
       <div class="debug-header" @click="toggleDebug">
-        <span>调试日志 ({{ logs.length }})</span>
+        <span>运行记录（排查问题时展开）</span>
         <span class="debug-toggle">{{ showDebug ? '▼' : '▶' }}</span>
       </div>
       <div v-if="showDebug" class="debug-logs">

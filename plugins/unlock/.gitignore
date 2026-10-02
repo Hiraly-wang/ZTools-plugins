@@ -29,3 +29,7 @@ release/
 # Preload binaries downloaded at install time (handle.exe + its EULA)
 public/preload/handle.exe
 public/preload/handle-EULA.txt
+
+# witr optional diagnostic binary (npm postinstall / runtime extract)
+public/preload/tools/witr.exe
+# runtime extract destination is %LOCALAPPDATA%/unlock-file/tools (not in repo)

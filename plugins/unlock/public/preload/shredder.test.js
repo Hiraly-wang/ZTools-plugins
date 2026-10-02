@@ -108,5 +108,20 @@ describe('shredder', () => {
       assert.equal(result.success, false)
       assert.equal(result.locked, true)
     })
+
+    it('separates permission failures from lock failures', () => {
+      const denied = parseShredResult('{"ok":false,"error":"access denied"}')
+      assert.equal(denied.permissionDenied, true)
+      assert.equal(denied.message, '权限不足，请以管理员身份运行 ZTools 后重试')
+
+      const locked = parseShredResult('{"ok":false,"error":"file is being used by another process"}')
+      assert.equal(locked.permissionDenied, undefined)
+      assert.equal(locked.message, '文件正被其他程序占用')
+    })
+
+    it('phrases success without debug punctuation', () => {
+      const result = parseShredResult('{"ok":true,"count":3}')
+      assert.equal(result.message, '已处理 3 个文件')
+    })
   })
 })

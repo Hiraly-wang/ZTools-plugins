@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
-import type { ProcessInfo } from '../env'
+import { ref, onMounted, watch, computed } from 'vue'
+import type { ProcessInfo, WhyInfo, MessageLevel } from '../env'
 
 const props = defineProps<{
   addLog: (msg: string) => void
@@ -11,10 +11,100 @@ const props = defineProps<{
 
 const filePath = ref('')
 const processes = ref<ProcessInfo[]>([])
+const status = ref<{ text: string; level: MessageLevel } | null>(null)
+const locked = ref<boolean | null>(null)
+const blocked = ref<boolean | null>(null)
+const pathState = ref('')
+const engine = ref('')
 const loading = ref('')
-const error = ref('')
 const isDragOver = ref(false)
 let dragCounter = 0
+
+const whyEngineLabel = computed(() => {
+  try {
+    return window.services.getWhyEngine() === 'witr' ? 'witr 溯源' : '原生溯源'
+  } catch (e) {
+    return '溯源'
+  }
+})
+
+const engineLabel = computed(() => {
+  if (!engine.value) return ''
+  return engine.value
+    .split('+')
+    .map(function (e) { return e === 'resourcemanager' ? '重启管理器' : e })
+    .join(' + ')
+})
+
+const stateLabel = computed(() => {
+  if (pathState.value === 'directory') return '文件夹'
+  if (pathState.value === 'missing') return '路径已不存在'
+  if (processes.value.length > 0 || pathState.value === 'locked') {
+    return blocked.value === false ? '句柄打开，但可独占访问' : '正在被占用'
+  }
+  if (pathState.value === 'free') return '未被占用'
+  return '状态未知'
+})
+
+const stateTone = computed(() => {
+  if (pathState.value === 'free') return 'ok'
+  if (pathState.value === 'directory' || pathState.value === 'unknown' || pathState.value === 'missing') return 'warn'
+  return blocked.value === false ? 'warn' : 'bad'
+})
+
+function showStatus(text: string, level: MessageLevel) {
+  status.value = { text: text, level: level }
+}
+
+function clearStatus() {
+  status.value = null
+}
+
+function sourceLabel(why?: WhyInfo): string {
+  if (!why) return ''
+  if (why.sourceLine) return why.sourceLine
+  if (!why.source) return ''
+  const t = why.source.type || 'unknown'
+  const n = why.source.name || ''
+  const map: Record<string, string> = {
+    windows_service: 'Windows 服务',
+    shell: '交互式 Shell',
+    init: '系统进程',
+    cron: '计划任务',
+    container: '容器',
+    supervisor: '守护进程',
+    ssh: 'SSH 会话',
+    unknown: '未知来源'
+  }
+  const label = map[t] || t
+  return n ? n + '（' + label + '）' : label
+}
+
+function detectLabel(source?: string): string {
+  if (source === 'witr') return 'witr 溯源'
+  if (source === 'resourcemanager') return '重启管理器确认'
+  return source || ''
+}
+
+function gitLabel(why?: WhyInfo): string {
+  if (!why) return ''
+  const repo = why.gitRepo || (why.process && why.process.gitRepo) || ''
+  const branch = why.gitBranch || (why.process && why.process.gitBranch) || ''
+  if (!repo) return ''
+  return branch ? repo + '（' + branch + '）' : repo
+}
+
+function userLabel(why?: WhyInfo): string {
+  return (why && (why.user || (why.process && why.process.user))) || ''
+}
+
+function startedLabel(why?: WhyInfo): string {
+  return (why && (why.startedAt || (why.process && why.process.startedAt))) || ''
+}
+
+function workingDirLabel(why?: WhyInfo): string {
+  return (why && (why.workingDir || (why.process && why.process.workingDir))) || ''
+}
 
 function handleDragEnter(e: DragEvent) { e.preventDefault(); dragCounter++; isDragOver.value = true }
 function handleDragLeave(e: DragEvent) { e.preventDefault(); dragCounter--; if (dragCounter <= 0) { isDragOver.value = false; dragCounter = 0 } }
@@ -25,18 +115,15 @@ function handleDrop(e: DragEvent) {
   isDragOver.value = false
   dragCounter = 0
   var dt = e.dataTransfer
-  if (!dt || !dt.files || !dt.files[0]) {
-    props.addLog('拖放: 无文件')
-    return
-  }
+  if (!dt || !dt.files || !dt.files[0]) return
   var file = dt.files[0]
-  props.addLog('拖放: ' + file.name)
   var fullPath = ''
   if (window.services.getPathForFile) {
     try { fullPath = window.services.getPathForFile(file) } catch (e) {}
   }
   if (!fullPath && (file as any).path) fullPath = (file as any).path
   if (fullPath) { filePath.value = fullPath; handleFind() }
+  else { showStatus('没能读取到这个文件的完整路径，请改用「浏览」按钮选择。', 'warning') }
 }
 
 onMounted(function () {
@@ -57,78 +144,82 @@ watch(
 )
 
 function handleBrowse() {
-  var files = window.ztools.showOpenDialog({ title: '选择文件或目录', properties: ['openFile', 'openDirectory'] })
+  var files = window.ztools.showOpenDialog({ title: '选择文件或文件夹', properties: ['openFile', 'openDirectory'] })
   if (files && files.length > 0) { filePath.value = files[0]; handleFind() }
 }
 
-async function handleFind() {
-  if (!filePath.value.trim()) { error.value = '请输入文件路径'; return }
-  loading.value = '正在扫描...'
-  error.value = ''
+async function handleFind(options?: { keepStatus?: boolean }) {
+  if (!filePath.value.trim()) { showStatus('请先拖入文件，或输入完整路径。', 'warning'); return }
+  if (!options || !options.keepStatus) clearStatus()
+  loading.value = '正在检查占用情况…'
   processes.value = []
+  engine.value = ''
+  locked.value = null
+  blocked.value = null
+  pathState.value = ''
   props.addLog('查找: ' + filePath.value.trim())
   try {
     var result = await window.services.findLockingProcesses(filePath.value.trim())
     props.flushDebugLog()
-    processes.value = result
-    props.addLog('找到 ' + result.length + ' 个进程')
-    if (result.length === 0) error.value = '未检测到占用进程'
+    processes.value = result.processes
+    engine.value = result.engine
+    locked.value = result.locked
+    blocked.value = result.blocked === undefined ? null : result.blocked
+    pathState.value = result.state || ''
+    props.addLog('结果: ' + result.processes.length + ' 个占用进程, engine=' + result.engine + ', state=' + result.state)
+    result.processes.forEach(function (p) {
+      if (p.why && p.why.ancestryText) props.addLog('  启动链 ' + p.name + ': ' + p.why.ancestryText)
+    })
+
+    if (!options || !options.keepStatus) {
+      if (result.processes.length > 0) {
+        showStatus('发现 ' + result.processes.length + ' 个占用进程。' + (result.note || ''), result.noteLevel || 'warning')
+      } else {
+        showStatus(result.note || '未检测到占用。', result.noteLevel || 'info')
+      }
+    }
   } catch (err: any) {
     props.flushDebugLog()
-    error.value = err.message || '扫描失败'
-    props.addLog('错误: ' + error.value)
+    showStatus(err.message || '检查失败，请重试。', 'error')
+    props.addLog('错误: ' + (err.message || err))
   } finally { loading.value = '' }
 }
 
 async function handleKill(proc: ProcessInfo) {
-  loading.value = '正在结束 ' + proc.name + ' (PID:' + proc.pid + ')...'
-  props.addLog('结束: ' + proc.name + ' PID:' + proc.pid)
+  loading.value = '正在结束「' + proc.name + '」…'
+  props.addLog('结束进程: ' + proc.name + ' (PID ' + proc.pid + ')')
   try {
-    var result = await window.services.killProcess(proc.pid)
+    var result = await window.services.killLockingProcess(filePath.value.trim(), proc.pid, proc.name)
     props.flushDebugLog()
+    showStatus(result.message, result.level || (result.success ? 'success' : 'error'))
     props.addLog('结束结果: ' + result.message)
     window.ztools.showNotification(result.message)
-    if (result.success) { await handleFind() }
-    else { error.value = result.message }
+    // 成功结束后刷新列表：仍在占用时保留提示，避免"以为已经解除"
+    if (result.success) await handleFind({ keepStatus: true })
   } catch (err: any) {
     props.flushDebugLog()
-    error.value = err.message || '结束失败'
-    props.addLog('结束出错: ' + error.value)
+    showStatus(err.message || '结束进程失败，请重试。', 'error')
+    props.addLog('结束出错: ' + (err.message || err))
   } finally { loading.value = '' }
 }
 
 async function handleKillAll() {
   if (processes.value.length === 0) return
   const uniquePids = Array.from(new Set(processes.value.map(p => p.pid)))
-  const count = uniquePids.length
-  loading.value = '正在结束全部 ' + count + ' 个进程...'
-  props.addLog('一键结束: ' + count + ' 个进程')
-
-  const results: { success: boolean; message: string }[] = []
-  for (const pid of uniquePids) {
-    try {
-      const result = await window.services.killProcess(pid)
-      results.push(result)
-      props.addLog('已结束 PID ' + pid + ': ' + (result.success ? '成功' : '失败'))
-    } catch (err: any) {
-      results.push({ success: false, message: err.message || '结束失败' })
-      props.addLog('结束 PID ' + pid + ' 出错: ' + (err.message || '未知'))
-    }
-  }
-
-  props.flushDebugLog()
-  const successCount = results.filter(r => r.success).length
-  const failCount = results.length - successCount
-
-  if (failCount === 0) {
-    window.ztools.showNotification('已结束全部 ' + successCount + ' 个进程')
-  } else {
-    window.ztools.showNotification('成功 ' + successCount + ', 失败 ' + failCount)
-    error.value = failCount + ' 个进程无法结束'
-  }
-
-  await handleFind()
-  loading.value = ''
+  loading.value = '正在结束 ' + uniquePids.length + ' 个占用进程…'
+  props.addLog('全部结束: ' + uniquePids.length + ' 个进程')
+  try {
+    const result = await window.services.killAllLockingProcesses(filePath.value.trim(), processes.value)
+    props.flushDebugLog()
+    showStatus(result.message, result.level || 'info')
+    props.addLog('全部结束结果: ' + result.message)
+    window.ztools.showNotification(result.message)
+    if (result.success) await handleFind({ keepStatus: true })
+  } catch (err: any) {
+    props.flushDebugLog()
+    showStatus(err.message || '结束进程失败，请重试。', 'error')
+    props.addLog('全部结束出错: ' + (err.message || err))
+  } finally { loading.value = '' }
 }
 </script>
 
@@ -145,41 +236,74 @@ async function handleKillAll() {
       <input
         v-model="filePath"
         class="input"
-        placeholder="输入路径或拖拽文件到此处"
-        @keyup.enter="handleFind"
+        placeholder="拖入文件或文件夹，也可以直接输入路径"
+        @keyup.enter="handleFind()"
       />
       <button class="btn" @click="handleBrowse">浏览</button>
     </div>
 
-    <div v-if="isDragOver" class="drop-hint">松开鼠标即可扫描</div>
+    <div class="hint-row">
+      <span class="engine-tag">{{ whyEngineLabel }}</span>
+      <span class="hint-text">先看清是谁在占用、它为什么在运行，再决定是否结束进程</span>
+    </div>
+
+    <div v-if="isDragOver" class="drop-hint">松开鼠标即可检查</div>
     <div v-if="loading" class="loading">{{ loading }}</div>
-    <div v-if="error && !loading" class="error">{{ error }}</div>
+
+    <div v-if="status && !loading" :class="['status', status.level]">{{ status.text }}</div>
 
     <div v-if="processes.length > 0" class="results">
       <div class="kill-all-bar">
-        <span class="count">找到 {{ processes.length }} 个进程</span>
+        <span class="count">
+          {{ processes.length }} 个占用进程
+          <span v-if="engineLabel" class="engine">· {{ engineLabel }}</span>
+        </span>
         <button
           :disabled="!!loading"
           class="kill-all-btn"
           @click="handleKillAll"
-        >一键结束全部</button>
+        >全部结束</button>
       </div>
-      <div v-for="(proc, idx) in processes" :key="idx" class="card" :class="{ suspicious: proc.source === 'suspicious' }">
+      <div v-for="(proc, idx) in processes" :key="proc.pid + '-' + idx" class="card">
         <div class="info">
           <span class="name">{{ proc.name }}</span>
-          <span class="pid">PID: {{ proc.pid }}</span>
+          <span class="pid">PID {{ proc.pid }}</span>
         </div>
         <div v-if="proc.exePath" class="exe-path">{{ proc.exePath }}</div>
-        <div v-if="proc.reason" class="reason">{{ proc.reason }}</div>
-        <div v-if="proc.cmdLine && proc.source === 'suspicious'" class="cmd-line" :title="proc.cmdLine">
-          {{ proc.cmdLine.substring(0, 100) }}{{ proc.cmdLine.length > 100 ? '...' : '' }}
+
+        <div v-if="proc.why && proc.why.ancestryText" class="why-block">
+          <div class="why-label">它是怎么跑起来的</div>
+          <div class="why-chain" :title="proc.why.ancestryText">{{ proc.why.ancestryText }}</div>
+          <div class="why-meta">
+            <span v-if="sourceLabel(proc.why)" class="why-source">来源：{{ sourceLabel(proc.why) }}</span>
+            <span v-if="proc.detectSource" class="why-detect">{{ detectLabel(proc.detectSource) }}</span>
+          </div>
+          <div v-if="workingDirLabel(proc.why)" class="why-cwd">工作目录：{{ workingDirLabel(proc.why) }}</div>
+          <div v-if="gitLabel(proc.why)" class="why-cwd">代码仓库：{{ gitLabel(proc.why) }}</div>
+          <div v-if="userLabel(proc.why)" class="why-cwd">运行用户：{{ userLabel(proc.why) }}</div>
+          <div v-if="startedLabel(proc.why)" class="why-cwd">启动时间：{{ startedLabel(proc.why) }}</div>
+          <div v-for="(w, wi) in (proc.why.warnings || [])" :key="wi" class="why-warn">提示：{{ w }}</div>
         </div>
-        <button
-          :disabled="!!loading"
-          class="kill-btn"
-          @click="handleKill(proc)"
-        >kill</button>
+
+        <div v-if="proc.service" class="service-hint">
+          该进程承载 Windows 服务「{{ proc.service }}」。直接结束可能会让服务自动重启，建议先停止该服务再操作。
+        </div>
+        <div v-if="proc.reason" class="reason">{{ proc.reason }}</div>
+        <div class="card-actions">
+          <button
+            :disabled="!!loading"
+            class="kill-btn"
+            @click="handleKill(proc)"
+          >结束进程</button>
+        </div>
       </div>
+    </div>
+
+    <div v-if="!loading && pathState && processes.length === 0" class="state-row">
+      <span class="state-chip" :class="stateTone">{{ stateLabel }}</span>
+    </div>
+    <div v-else-if="!loading && !status && filePath.trim()" class="idle-hint">
+      点击「浏览」选择文件，或直接按回车开始检查。
     </div>
   </div>
 </template>
@@ -193,24 +317,44 @@ async function handleKillAll() {
 .input::placeholder { color: var(--text-secondary, #888); }
 .btn { padding: 4px 12px; border: 1px solid var(--border-color, #555); border-radius: 4px; background: transparent; cursor: pointer; font-size: 13px; color: var(--text-color, #e0e0e0); }
 .btn:hover { background: var(--hover-color, #333); }
+.hint-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.engine-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(66, 184, 131, 0.15); color: var(--primary-color, #42b883); font-weight: 600; }
+.hint-text { font-size: 12px; color: var(--text-secondary, #888); }
 .loading { margin-top: 12px; text-align: center; color: var(--text-secondary, #aaa); }
-.error { margin-top: 12px; padding: 10px; border-radius: 6px; background: #fff2f0; color: #cf1322; font-size: 13px; }
+.idle-hint { margin-top: 12px; text-align: center; font-size: 13px; color: var(--text-secondary, #888); }
+.status { margin-top: 12px; padding: 10px 12px; border-radius: 6px; font-size: 13px; line-height: 1.6; border-left: 3px solid transparent; }
+.status.success { background: rgba(82, 196, 26, 0.12); color: #95de64; border-left-color: #52c41a; }
+.status.info { background: rgba(66, 184, 131, 0.10); color: #9fd8bd; border-left-color: #42b883; }
+.status.warning { background: rgba(250, 173, 20, 0.12); color: #ffd666; border-left-color: #faad14; }
+.status.error { background: rgba(255, 77, 79, 0.12); color: #ff9c9e; border-left-color: #ff4d4f; }
+.state-chip { display: inline-block; margin-top: 12px; padding: 4px 10px; border-radius: 10px; font-size: 12px; }
+.state-chip.ok { background: rgba(82, 196, 26, 0.15); color: #95de64; }
+.state-chip.warn { background: rgba(250, 173, 20, 0.15); color: #ffd666; }
+.state-chip.bad { background: rgba(255, 77, 79, 0.15); color: #ff9c9e; }
 .results { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .card { padding: 12px; border: 1px solid var(--border-color, #444); border-radius: 8px; background: var(--card-bg, #2a2a2a); }
 .info { display: flex; justify-content: space-between; align-items: center; }
 .name { font-weight: 600; font-size: 14px; }
 .pid { font-size: 12px; color: var(--text-secondary, #999); }
 .exe-path { margin-top: 4px; font-size: 12px; color: var(--text-secondary, #999); word-break: break-all; }
-.kill-btn { margin-top: 8px; padding: 6px 14px; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; background: #fff1f0; color: #cf1322; }
+.why-block { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: rgba(66, 184, 131, 0.08); border-left: 3px solid var(--primary-color, #42b883); }
+.why-label { font-size: 11px; letter-spacing: 0.4px; color: var(--primary-color, #42b883); font-weight: 700; margin-bottom: 4px; }
+.why-chain { font-size: 12px; line-height: 1.5; color: var(--text-color, #e0e0e0); word-break: break-all; font-family: ui-monospace, Consolas, monospace; }
+.why-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.why-source { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: rgba(66, 184, 131, 0.2); color: var(--primary-color, #42b883); }
+.why-detect { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); color: var(--text-secondary, #999); }
+.why-cwd { margin-top: 4px; font-size: 11px; color: var(--text-secondary, #888); word-break: break-all; }
+.why-warn { margin-top: 4px; font-size: 11px; color: #faad14; }
+.service-hint { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: rgba(250, 173, 20, 0.10); color: #ffd666; font-size: 12px; line-height: 1.6; }
+.card-actions { margin-top: 8px; display: flex; justify-content: flex-end; }
+.kill-btn { padding: 6px 14px; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; background: #fff1f0; color: #cf1322; }
 .kill-btn:hover:not(:disabled) { background: #ffccc7; }
 .kill-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .kill-all-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #2a2a2a; border: 1px solid #444; border-radius: 8px; margin-bottom: 8px; }
 .kill-all-bar .count { font-size: 13px; color: #aaa; }
+.kill-all-bar .engine { color: #777; }
 .kill-all-btn { padding: 6px 16px; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; background: #ff4d4f; color: white; font-weight: 600; }
 .kill-all-btn:hover:not(:disabled) { background: #ff7875; }
 .kill-all-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.card.suspicious { border-color: #faad14; background: #fffbe6; }
-.card.suspicious .name { color: #d48806; }
-.reason { margin-top: 4px; font-size: 12px; color: #d48806; font-style: italic; }
-.cmd-line { margin-top: 4px; font-size: 11px; color: #888; font-family: monospace; background: #1a1a1a; padding: 4px 6px; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reason { margin-top: 4px; font-size: 12px; color: var(--text-secondary, #999); }
 </style>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { ProcessInfo } from '../env'
+import type { ProcessInfo, MessageLevel } from '../env'
 
 const props = defineProps<{
   addLog: (msg: string) => void
@@ -10,14 +10,21 @@ const props = defineProps<{
 const filePath = ref('')
 const mode = ref<'delete' | 'shred'>('shred')
 const loading = ref('')
-const error = ref('')
-const result = ref('')
+const status = ref<{ text: string; level: MessageLevel } | null>(null)
 const isDragOver = ref(false)
 let dragCounter = 0
 
 // 占用确认弹窗状态
 const lockedProcesses = ref<ProcessInfo[]>([])
 const showLockConfirm = ref(false)
+
+function showStatus(text: string, level: MessageLevel) {
+  status.value = { text: text, level: level }
+}
+
+function actionName(): string {
+  return mode.value === 'shred' ? '粉碎' : '删除'
+}
 
 function handleDragEnter(e: DragEvent) { e.preventDefault(); dragCounter++; isDragOver.value = true }
 function handleDragLeave(e: DragEvent) { e.preventDefault(); dragCounter--; if (dragCounter <= 0) { isDragOver.value = false; dragCounter = 0 } }
@@ -26,66 +33,76 @@ function handleDragOver(e: DragEvent) { e.preventDefault(); e.stopPropagation() 
 function handleDrop(e: DragEvent) {
   e.preventDefault(); isDragOver.value = false; dragCounter = 0
   var dt = e.dataTransfer; if (!dt || !dt.files || !dt.files[0]) return
-  var file = dt.files[0]; props.addLog('拖放: ' + file.name)
+  var file = dt.files[0]
   var fullPath = ''
   if (window.services.getPathForFile) { try { fullPath = window.services.getPathForFile(file) } catch (e) {} }
   if (!fullPath && (file as any).path) fullPath = (file as any).path
   if (fullPath) filePath.value = fullPath
+  else showStatus('没能读取到这个文件的完整路径，请改用「浏览」按钮选择。', 'warning')
 }
 
 function handleBrowse() {
-  var files = window.ztools.showOpenDialog({ title: '选择文件或目录', properties: ['openFile', 'openDirectory'] })
+  var files = window.ztools.showOpenDialog({ title: '选择文件或文件夹', properties: ['openFile', 'openDirectory'] })
   if (files && files.length > 0) filePath.value = files[0]
 }
 
 async function handleStart() {
-  if (!filePath.value.trim()) { error.value = '请输入文件路径'; return }
+  if (!filePath.value.trim()) { showStatus('请先拖入文件，或输入完整路径。', 'warning'); return }
   showLockConfirm.value = false
   lockedProcesses.value = []
   await doShred()
 }
 
 async function doShred() {
-  if (!filePath.value.trim()) { error.value = '请输入文件路径'; return }
-  loading.value = (mode.value === 'shred' ? '正在粉碎' : '正在删除') + '...'
-  error.value = ''
-  result.value = ''
+  if (!filePath.value.trim()) { showStatus('请先拖入文件，或输入完整路径。', 'warning'); return }
+  loading.value = '正在' + actionName() + '…'
+  status.value = null
   props.addLog('处理: ' + filePath.value.trim() + ' 模式=' + mode.value)
   try {
     var res = await window.services.shredPath(filePath.value.trim(), mode.value)
     props.flushDebugLog()
 
+    // 权限问题与占用问题不是一回事：权限不足时不必去找占用进程
+    if (res.permissionDenied) {
+      props.addLog('权限不足: ' + res.message)
+      showStatus(res.message, 'warning')
+      return
+    }
+
     if (res.locked) {
-      props.addLog('文件被占用,正在查找占用进程...')
-      loading.value = '文件被占用,正在查找占用进程...'
-      var procs = await window.services.findLockingProcesses(filePath.value.trim())
+      props.addLog('文件被占用，正在查找占用进程...')
+      loading.value = '文件正被占用，正在查找占用它的程序…'
+      var scan = await window.services.findLockingProcesses(filePath.value.trim())
       props.flushDebugLog()
+      var procs = scan.processes || []
 
       if (procs.length > 0) {
-        // 找到占用进程,弹出确认对话框
         lockedProcesses.value = procs
         showLockConfirm.value = true
         loading.value = ''
         return
       }
 
-      // 没找到具体进程,直接提示
-      props.addLog('未找到占用进程,无法自动解除')
-      error.value = res.message + '。未能检测到具体占用进程,请尝试以管理员身份运行或手动关闭相关程序。'
+      // 没能查到具体进程：给出可执行的下一步，而不是"未知错误"
+      props.addLog('未找到占用进程，无法自动解除')
+      showStatus(
+        '文件正被占用，但没能查到具体是哪个程序。' + (scan.note || '可以尝试以管理员身份运行 ZTools 后重试。'),
+        'warning'
+      )
       return
     }
 
     if (res.success) {
-      result.value = res.message
+      showStatus('已完成：' + res.message + '。', 'success')
       props.addLog('完成: ' + res.message)
     } else {
-      error.value = res.message
+      showStatus(res.message || (actionName() + '失败，请重试。'), 'error')
       props.addLog('失败: ' + res.message)
     }
   } catch (err: any) {
     props.flushDebugLog()
-    error.value = err.message || '操作失败'
-    props.addLog('错误: ' + error.value)
+    showStatus(err.message || '操作失败，请重试。', 'error')
+    props.addLog('错误: ' + (err.message || err))
   } finally { loading.value = '' }
 }
 
@@ -95,40 +112,44 @@ async function handleConfirmUnlock() {
   var uniqueProcs = procs.filter(function (p, idx, self) {
     return idx === self.findIndex(function (t) { return t.pid === p.pid })
   })
-  loading.value = '正在结束 ' + uniqueProcs.length + ' 个占用进程...'
-  props.addLog('确认解除占用,结束 ' + uniqueProcs.length + ' 个进程')
+  var target = filePath.value.trim()
+  loading.value = '正在结束 ' + uniqueProcs.length + ' 个占用进程…'
+  props.addLog('确认解除占用，结束 ' + uniqueProcs.length + ' 个进程')
 
-  for (var i = 0; i < uniqueProcs.length; i++) {
-    var killRes = await window.services.killProcess(uniqueProcs[i].pid)
-    props.flushDebugLog()
-    props.addLog('已结束 ' + uniqueProcs[i].name + ' (PID:' + uniqueProcs[i].pid + ') ' + (killRes.success ? '成功' : '失败'))
-  }
-
-  lockedProcesses.value = []
-
-  // 重试删除/粉碎
-  loading.value = (mode.value === 'shred' ? '正在粉碎' : '正在删除') + ' (重试)...'
   try {
-    var res = await window.services.shredPath(filePath.value.trim(), mode.value)
+    var killResult = await window.services.killAllLockingProcesses(target, uniqueProcs)
+    props.flushDebugLog()
+    props.addLog('解除结果: ' + killResult.message)
+    window.ztools.showNotification(killResult.message)
+    lockedProcesses.value = []
+
+    // 占用没解除就没必要立刻重试删除/粉碎，先把原因讲清楚
+    if (killResult.released === false) {
+      showStatus(killResult.message, 'warning')
+      return
+    }
+
+    loading.value = '正在' + actionName() + '…'
+    var res = await window.services.shredPath(target, mode.value)
     props.flushDebugLog()
     if (res.success) {
-      result.value = res.message
+      showStatus('已解除占用并完成' + actionName() + '：' + res.message + '。', 'success')
       props.addLog('完成: ' + res.message)
     } else {
-      error.value = res.message
+      showStatus(res.message || (actionName() + '失败，请重试。'), 'error')
       props.addLog('失败: ' + res.message)
     }
   } catch (err: any) {
     props.flushDebugLog()
-    error.value = err.message || '操作失败'
-    props.addLog('错误: ' + error.value)
+    showStatus(err.message || '操作失败，请重试。', 'error')
+    props.addLog('错误: ' + (err.message || err))
   } finally { loading.value = '' }
 }
 
 function handleCancelUnlock() {
   showLockConfirm.value = false
   lockedProcesses.value = []
-  error.value = '已取消,文件未被处理'
+  showStatus('已取消，文件保持不变。', 'info')
 }
 </script>
 
@@ -145,7 +166,7 @@ function handleCancelUnlock() {
       <input
         v-model="filePath"
         class="input"
-        placeholder="输入路径或拖拽文件到此处"
+        placeholder="拖入文件或文件夹，也可以直接输入路径"
         @keyup.enter="handleStart"
       />
       <button class="btn" @click="handleBrowse">浏览</button>
@@ -162,25 +183,32 @@ function handleCancelUnlock() {
       </label>
     </div>
 
+    <div class="hint-row">
+      <span class="hint-text">粉碎会先用随机数据覆写文件内容再删除，无法恢复；删除只移除文件本身</span>
+    </div>
+
     <button class="start-btn" :disabled="!!loading" @click="handleStart">
-      {{ mode === 'shred' ? '粉碎' : '删除' }}
+      {{ mode === 'shred' ? '开始粉碎' : '开始删除' }}
     </button>
 
     <div v-if="loading" class="loading">{{ loading }}</div>
-    <div v-if="result && !loading" class="success">{{ result }}</div>
-    <div v-if="error && !loading" class="error">{{ error }}</div>
+    <div v-if="status && !loading" :class="['status', status.level]">{{ status.text }}</div>
 
     <!-- 占用确认弹窗 -->
     <div v-if="showLockConfirm" class="lock-confirm-overlay">
       <div class="lock-confirm-dialog">
-        <div class="lock-confirm-title">文件被占用</div>
+        <div class="lock-confirm-title">文件正被占用</div>
         <div class="lock-confirm-desc">
-          以下 {{ lockedProcesses.length }} 个进程正在占用该文件。是否结束这些进程并继续{{ mode === 'shred' ? '粉碎' : '删除' }}？
+          下面 {{ lockedProcesses.length }} 个程序正在使用这个文件。结束它们后即可继续{{ actionName() }}，未保存的内容可能会丢失。
         </div>
         <div class="lock-proc-list">
           <div v-for="(proc, idx) in lockedProcesses" :key="idx" class="lock-proc-item">
-            <span class="lock-proc-name">{{ proc.name }}</span>
-            <span class="lock-proc-pid">PID: {{ proc.pid }}</span>
+            <div class="lock-proc-main">
+              <span class="lock-proc-name">{{ proc.name }}</span>
+              <span class="lock-proc-pid">PID {{ proc.pid }}</span>
+            </div>
+            <div v-if="proc.why && proc.why.ancestryText" class="lock-proc-why">{{ proc.why.ancestryText }}</div>
+            <div v-if="proc.service" class="lock-proc-why">承载 Windows 服务：{{ proc.service }}</div>
           </div>
         </div>
         <div class="lock-confirm-actions">
@@ -204,20 +232,27 @@ function handleCancelUnlock() {
 .mode-select { margin-top: 12px; display: flex; gap: 16px; }
 .mode-select label { display: flex; align-items: center; gap: 4px; font-size: 14px; cursor: pointer; color: var(--text-secondary, #999); padding: 4px 10px; border-radius: 4px; border: 1px solid transparent; }
 .mode-select label.active { color: var(--primary-color, #42b883); border-color: var(--primary-color, #42b883); }
+.hint-row { margin-top: 8px; }
+.hint-text { font-size: 12px; color: var(--text-secondary, #888); }
 .start-btn { margin-top: 12px; padding: 8px 20px; border: none; border-radius: 4px; font-size: 14px; cursor: pointer; background: var(--primary-color, #42b883); color: #fff; }
 .start-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .loading { margin-top: 12px; text-align: center; color: var(--text-secondary, #aaa); }
-.success { margin-top: 12px; padding: 10px; border-radius: 6px; background: #f6ffed; color: #389e0d; font-size: 13px; }
-.error { margin-top: 12px; padding: 10px; border-radius: 6px; background: #fff2f0; color: #cf1322; font-size: 13px; }
+.status { margin-top: 12px; padding: 10px 12px; border-radius: 6px; font-size: 13px; line-height: 1.6; border-left: 3px solid transparent; }
+.status.success { background: rgba(82, 196, 26, 0.12); color: #95de64; border-left-color: #52c41a; }
+.status.info { background: rgba(66, 184, 131, 0.10); color: #9fd8bd; border-left-color: #42b883; }
+.status.warning { background: rgba(250, 173, 20, 0.12); color: #ffd666; border-left-color: #faad14; }
+.status.error { background: rgba(255, 77, 79, 0.12); color: #ff9c9e; border-left-color: #ff4d4f; }
 
 .lock-confirm-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; border-radius: 8px; }
-.lock-confirm-dialog { background: var(--card-bg, #2a2a2a); border-radius: 10px; padding: 20px; max-width: 90%; width: 360px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+.lock-confirm-dialog { background: var(--card-bg, #2a2a2a); border-radius: 10px; padding: 20px; max-width: 90%; width: 380px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
 .lock-confirm-title { font-size: 16px; font-weight: 700; color: var(--text-color, #e0e0e0); margin-bottom: 8px; }
 .lock-confirm-desc { font-size: 13px; color: var(--text-secondary, #aaa); line-height: 1.6; margin-bottom: 14px; }
-.lock-proc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 160px; overflow-y: auto; }
-.lock-proc-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: rgba(255,255,255,0.05); border-radius: 6px; }
+.lock-proc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 200px; overflow-y: auto; }
+.lock-proc-item { padding: 8px 10px; background: rgba(255,255,255,0.05); border-radius: 6px; }
+.lock-proc-main { display: flex; justify-content: space-between; align-items: center; }
 .lock-proc-name { font-size: 13px; font-weight: 600; color: var(--text-color, #e0e0e0); }
 .lock-proc-pid { font-size: 12px; color: var(--text-secondary, #999); }
+.lock-proc-why { margin-top: 4px; font-size: 11px; color: var(--text-secondary, #888); font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
 .lock-confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .lock-cancel-btn { padding: 6px 16px; border: 1px solid var(--border-color, #555); border-radius: 4px; background: transparent; color: var(--text-color, #e0e0e0); font-size: 13px; cursor: pointer; }
 .lock-cancel-btn:hover { background: var(--hover-color, #333); }
