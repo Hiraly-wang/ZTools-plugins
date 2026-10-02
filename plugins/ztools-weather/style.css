@@ -1,0 +1,298 @@
+/* 天气助手 · 主题与布局
+   亮色为 :root 基线，@media(prefers-color-scheme: dark) 兜底，
+   JS 拿到宿主结论后再给 body 加 .dark/.light（class 优先级高于媒体查询）。
+   每个样式表顶部必须有 [hidden] 兜底：作者样式里给元素写了 display，
+   会静默压掉 UA 的 [hidden]{display:none}。 */
+
+[hidden] { display: none !important; }
+
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6fa;
+  --card: #ffffff;
+  --card2: #f8fafc;
+  --line: #e2e8f0;
+  --fg: #0f172a;
+  --fg2: #3f4c60;
+  /* --muted 必须满足 WCAG AA：在 --bg(#f4f6fa) 上对比度 ≥4.5:1。
+     #7c8aa0 只有 3.2:1，浅灰小字看不清，已调深到 #59637a（实测 5.4:1）。 */
+  --muted: #59637a;
+  --accent: #0284c7;
+  --accent-fg: #ffffff;
+  --good: #059669;
+  --fair: #65a30d;
+  --warn: #ea580c;
+  --bad: #dc2626;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 16px rgba(15, 23, 42, .06);
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1220;
+    --card: #141d2e;
+    --card2: #1a2537;
+    --line: #26314a;
+    --fg: #e8eefb;
+    --fg2: #a9b6cd;
+    --muted: #7e8ca6;
+    --accent: #38bdf8;
+    --accent-fg: #04263a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 20px rgba(0, 0, 0, .35);
+  }
+}
+body.dark {
+  --bg: #0b1220; --card: #141d2e; --card2: #1a2537; --line: #26314a;
+  --fg: #e8eefb; --fg2: #a9b6cd; --muted: #7e8ca6; --accent: #38bdf8; --accent-fg: #04263a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 20px rgba(0, 0, 0, .35);
+}
+body.light {
+  --bg: #f4f6fa; --card: #ffffff; --card2: #f8fafc; --line: #e2e8f0;
+  --fg: #0f172a; --fg2: #3f4c60; --muted: #59637a; --accent: #0284c7; --accent-fg: #ffffff;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 16px rgba(15, 23, 42, .06);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  padding-bottom: 14px;
+  /* ⚠ 这里不能设 overflow-x: hidden。
+     只要 html/body 上有 overflow-x/y ≠ visible，position:sticky 就会失效——
+     浏览器会把元素「吸附容器」当成那个带 overflow 的盒子，滚动容器一变 sticky 就废了，
+     顶栏于是跟着内容滚走。横向溢出改在 .topbar / 各滚动容器（.cities、.results）上单独处理。 */
+}
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+button, input, select { font-family: inherit; font-size: 14px; color: var(--fg); }
+button { cursor: pointer; }
+
+/* ---------- 顶栏 ----------
+   顶栏 / 搜索框 / 城市条 放在同一个 .topbar 容器里，整体 sticky。
+   为什么不能各sticky: 之前 .bar 和 .searchwrap 是兄弟，各自 sticky，
+   .searchwrap 写死 top:47px 去对齐「假定 47px 高的顶栏」——一旦顶栏换行、
+   字号或 padding 变了就错位；而且它会盖在 .cities 上（滚动时城市条被挡）。
+   合成一个容器后：下拉框展开时容器整体变高，把下方内容推开，而不是覆盖。
+   滚动时整个顶栏（含搜索框与城市条）一起固定。 */
+.topbar {
+  position: sticky; top: 0; z-index: 30;
+  background: var(--card);
+  overflow-x: clip;   /* 顶栏自身不许横向溢出，但不建立滚动容器，sticky 仍有效 */
+}
+.bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand img { width: 26px; height: 26px; border-radius: 7px; }
+.brand b { font-size: 15px; }
+.acts { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+#q {
+  width: 190px; max-width: 42vw;
+  padding: 6px 10px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--card2);
+  color: var(--fg); caret-color: var(--accent);
+}
+#q::placeholder { color: var(--muted); }
+#q:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bar button, .panel-f button {
+  padding: 6px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--card2); color: var(--fg);
+}
+.bar button:hover, .panel-f button:hover { border-color: var(--accent); }
+.primary { background: var(--accent) !important; color: var(--accent-fg) !important; border-color: var(--accent) !important; font-weight: 600; }
+.ghost { background: transparent !important; border-color: var(--line) !important; }
+.danger:hover { border-color: var(--bad) !important; color: var(--bad) !important; }
+
+/* ---------- 搜索框 + 下拉候选 ---------- */
+.searchbox { display: flex; align-items: center; gap: 8px; padding: 9px 14px; }
+.sicon { font-size: 15px; opacity: .6; flex: 0 0 auto; }
+#q {
+  flex: 1; min-width: 0;
+  padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card2);
+  color: var(--fg); caret-color: var(--accent); font-size: 15px;
+}
+#q::placeholder { color: var(--muted); }
+#q:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#q::-webkit-search-cancel-button { display: none; }
+.qclear {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--card2); color: var(--muted);
+  font-size: 12px; line-height: 1; padding: 0;
+}
+.qclear:hover { border-color: var(--bad); color: var(--bad); }
+
+.results { max-height: 320px; overflow-y: auto; border-top: 1px solid var(--line); }
+.results .r {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px; cursor: pointer; border-bottom: 1px solid var(--line);
+}
+.results .r:last-child { border-bottom: 0; }
+.results .r:hover, .results .r.on { background: var(--card2); }
+.results .r.on { box-shadow: inset 3px 0 0 var(--accent); }
+.r-name { font-weight: 600; font-size: 14px; }
+.r-name mark { background: color-mix(in srgb, var(--accent) 26%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.r-sub { color: var(--muted); font-size: 12px; }
+.r-py {
+  margin-left: auto; flex: 0 0 auto;
+  font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+  padding: 2px 7px; border-radius: 6px; background: var(--card2); border: 1px solid var(--line);
+}
+.r-py b { color: var(--accent); font-weight: 700; }
+.results .none { padding: 14px 16px; color: var(--muted); text-align: center; font-size: 13px; }
+.hint { padding: 0 16px 8px; font-size: 11px; color: var(--muted); }
+.hint:empty, .hint[hidden] { display: none; }
+
+/* ---------- 城市条 ---------- */
+.cities {
+  display: flex; gap: 6px; padding: 9px 14px; overflow-x: auto;
+  background: var(--card); border-bottom: 1px solid var(--line);
+}
+.cities:empty { display: none; }
+.chip {
+  flex: 0 0 auto; display: inline-flex; align-items: stretch;
+  border-radius: 999px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--card);
+}
+.chip:hover { border-color: var(--accent); }
+.chip.on { background: var(--accent); border-color: var(--accent); }
+.chip-name {
+  padding: 5px 4px 5px 12px; border: 0; background: transparent;
+  color: var(--fg2); white-space: nowrap; border-radius: 999px 0 0 999px;
+}
+.chip-name:hover { background: transparent; }
+.chip.on .chip-name { color: var(--accent-fg); font-weight: 600; }
+/* 删除按钮：默认半透明，hover 或聚焦时才完全显形，避免视觉噪音 */
+.chip-x {
+  width: 22px; padding: 0; border: 0; background: transparent;
+  color: var(--muted); font-size: 15px; line-height: 1;
+  border-radius: 0 999px 999px 0; opacity: .5;
+}
+.chip-x:hover, .chip-x:focus-visible { opacity: 1; background: color-mix(in srgb, var(--bad) 22%, transparent); color: var(--bad); }
+.chip.on .chip-x { color: var(--accent-fg); opacity: .75; }
+.chip.on .chip-x:hover { background: color-mix(in srgb, #000 25%, transparent); color: #fff; }
+
+/* ---------- 卡片 ---------- */
+#view { display: grid; gap: 10px; padding: 0 14px; }
+/* 两栏卡片：用 minmax(0,1fr) 而不是 1fr，否则内容（长数字 + 单位）会撑破列宽被切字。
+   窄窗口直接单栏，别硬挤。 */
+.grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 10px; }
+@media (max-width: 560px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.card {
+  min-width: 0; background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 11px 13px; box-shadow: var(--shadow);
+}
+.card-h { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.card-h span:last-child:not(:first-child) { margin-left: auto; }
+
+.now {
+  display: flex; gap: 14px; align-items: flex-start;
+  background: linear-gradient(135deg, var(--card) 0%, var(--card2) 100%);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow);
+}
+.now-left { min-width: 0; }
+.now-temp { font-size: 44px; font-weight: 700; line-height: 1.05; letter-spacing: -1px; }
+.now-temp i { font-size: 20px; font-style: normal; color: var(--muted); margin-left: 2px; }
+.now-text { font-size: 15px; color: var(--fg2); }
+.now-city { margin-top: 2px; font-size: 13px; color: var(--muted); }
+.now-meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.now-right { margin-left: auto; text-align: right; }
+.now-icon { font-size: 52px; line-height: 1; }
+.now-actions { margin-top: 10px; display: flex; gap: 6px; justify-content: flex-end; }
+.now-actions button { padding: 4px 9px; border-radius: 8px; border: 1px solid var(--line); background: transparent; font-size: 12px; }
+
+.badge { padding: 2px 9px; border-radius: 999px; background: var(--card2); border: 1px solid var(--line); color: var(--fg2); font-weight: 600; }
+.badge.good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
+.badge.fair { background: color-mix(in srgb, var(--fair) 16%, transparent); color: var(--fair); border-color: color-mix(in srgb, var(--fair) 40%, transparent); }
+.badge.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.badge.bad  { background: color-mix(in srgb, var(--bad) 16%, transparent);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+
+.aqi-main { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+.aqi-main small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chips span { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--card2); border: 1px solid var(--line); color: var(--fg2); }
+
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 10px; font-size: 13px; }
+.kv dt, .kv .k { color: var(--muted); }
+.kv dd, .kv .v {
+  margin: 0; text-align: right; font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere; min-width: 0;
+}
+
+/* ---------- 24 小时 ---------- */
+.hours { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; }
+.hour { flex: 0 0 54px; text-align: center; font-size: 12px; color: var(--fg2); }
+.hour b { display: block; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hour span { font-size: 17px; display: block; }
+.hour em { font-style: normal; font-size: 11px; color: var(--muted); }
+.chart { width: 100%; height: 150px; margin-top: 6px; display: block; overflow: visible; }
+#day-chart { height: 120px; }
+.chart .ln { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.chart .ln-min { fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-dasharray: 4 4; }
+.chart .bar { fill: color-mix(in srgb, var(--accent) 30%, transparent); }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart text { fill: var(--muted); font-size: 10px; }
+.chart .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
+
+/* ---------- 7 天 ---------- */
+.days { display: flex; flex-direction: column; }
+.day { display: grid; grid-template-columns: 62px 26px 46px 1fr 78px; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.day:last-child { border-bottom: 0; }
+.day .d1 { color: var(--fg2); }
+.day .d2 { font-size: 19px; text-align: center; }
+.day .d3 { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.day .d4 { color: var(--muted); font-size: 11px; text-align: right; }
+.day.today .d1 { color: var(--accent); font-weight: 700; }
+
+/* ---------- 空态 / 提示 / 对话框 ---------- */
+.empty { text-align: center; padding: 42px 20px; color: var(--fg2); }
+.empty-icon { font-size: 46px; }
+.empty p { margin: 6px 0; }
+.toast {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  background: var(--fg); color: var(--card); padding: 8px 15px; border-radius: 999px;
+  font-size: 13px; z-index: 60; box-shadow: var(--shadow); max-width: 80vw; text-align: center;
+}
+
+.mask { position: fixed; inset: 0; z-index: 48; background: rgba(0, 0, 0, .38); }
+.dlg {
+  position: fixed; z-index: 50; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 60px);
+  display: flex; flex-direction: column;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 18px 48px rgba(0, 0, 0, .28);
+}
+.dlg-h { display: flex; align-items: center; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+.dlg-h b { font-size: 15px; }
+.dlg-x { margin-left: auto; width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--card2); color: var(--muted); font-size: 12px; padding: 0; }
+.dlg-x:hover { border-color: var(--bad); color: var(--bad); }
+.dlg-b { padding: 12px 16px; overflow-y: auto; display: grid; gap: 14px; }
+.grp { display: grid; gap: 8px; }
+.grp-t { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.dlg-b .row { display: flex; align-items: center; gap: 10px; }
+.dlg-b .lb { width: 76px; flex: 0 0 auto; color: var(--fg2); font-size: 13px; }
+.seg { display: flex; flex: 1; gap: 4px; flex-wrap: wrap; }
+.seg button {
+  flex: 1 1 auto; padding: 5px 9px; border-radius: 8px; font-size: 12px;
+  border: 1px solid var(--line); background: var(--card2); color: var(--fg2);
+}
+.seg button:hover { border-color: var(--accent); }
+.seg button.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.dlg-b select { flex: 1; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--fg); }
+.note { margin: 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.dlg-f { display: flex; gap: 8px; justify-content: flex-end; padding: 11px 16px; border-top: 1px solid var(--line); }
+.dlg-f button { padding: 7px 18px; border-radius: 9px; border: 1px solid var(--line); background: var(--card2); color: var(--fg); }
+.sec:hover { border-color: var(--accent); }
+
+.err { color: var(--bad); }
+.loading { color: var(--muted); }
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { border: 2px solid transparent; background-clip: padding-box; border-radius: 8px; background-color: color-mix(in srgb, var(--muted) 45%, transparent); }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--muted) 70%, transparent); }
+::-webkit-scrollbar-track { background: transparent; }
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>天气助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <img src="logo.png" alt="logo">
+      <div>
+        <b>天气助手</b>
+        <span id="src-info" class="muted">Open-Meteo · 免密钥</span>
+      </div>
+    </div>
+    <div class="acts">
+      <input id="q" type="search" placeholder="搜索城市，回车添加…" autocomplete="off" spellcheck="false">
+      <button id="add" class="primary" title="搜索并添加城市">＋ 添加</button>
+      <button id="refresh" title="立即刷新当前城市">⟳ 刷新</button>
+      <button id="settings" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <div id="results" class="results" hidden></div>
+
+  <nav id="cities" class="cities"></nav>
+
+  <main id="view">
+    <section id="now-card" class="now">
+      <div class="now-left">
+        <div class="now-temp"><span id="cur-temp">--</span><i id="cur-unit">°C</i></div>
+        <div id="cur-text" class="now-text">--</div>
+        <div id="cur-city" class="now-city">正在载入…</div>
+        <div id="cur-meta" class="now-meta"></div>
+      </div>
+      <div class="now-right">
+        <div id="cur-icon" class="now-icon">🌡️</div>
+        <div id="cur-updated" class="muted small"></div>
+        <div class="now-actions">
+          <button id="copy" class="ghost" title="复制当前天气文本">复制</button>
+          <button id="del-city" class="ghost danger" title="从列表移除该城市">移除</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="card-h"><span>空气质量</span><span id="aqi-badge" class="badge">--</span></div>
+        <div id="aqi-main" class="aqi-main">--</div>
+        <div id="aqi-parts" class="chips"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><span>今日概况</span></div>
+        <div id="today-grid" class="kv"></div>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <div class="card-h"><span>未来 24 小时</span><span class="muted small">实心=温度 · 柱高=降水概率</span></div>
+      <div id="hours" class="hours"></div>
+      <svg id="hour-chart" class="chart" viewBox="0 0 960 150" preserveAspectRatio="none" aria-label="24 小时温度与降水概率"></svg>
+    </section>
+
+    <section class="card wide">
+      <div class="card-h"><span>未来 7 天</span></div>
+      <div id="days" class="days"></div>
+      <svg id="day-chart" class="chart" viewBox="0 0 960 120" preserveAspectRatio="none" aria-label="7 天最高最低温"></svg>
+    </section>
+  </main>
+
+  <div id="empty" class="empty" hidden>
+    <div class="empty-icon">🌤️</div>
+    <p>还没有添加城市</p>
+    <p class="muted small">在上方搜索城市名（支持中文），或点「添加」后选一个。</p>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="settings-panel" class="panel" hidden>
+    <div class="panel-h">设置</div>
+    <div class="panel-b">
+      <label class="row"><span>温度单位</span>
+        <select id="s-temp"><option value="C">摄氏度 °C</option><option value="F">华氏度 °F</option></select>
+      </label>
+      <label class="row"><span>风速单位</span>
+        <select id="s-wind"><option value="kmh">公里/小时</option><option value="ms">米/秒</option><option value="mph">英里/小时</option></select>
+      </label>
+      <label class="row"><span>自动刷新间隔</span>
+        <select id="s-refresh"><option value="0">关闭</option><option value="5">5 分钟</option><option value="10">10 分钟</option><option value="30">30 分钟</option><option value="60">1 小时</option></select>
+      </label>
+      <label class="row"><span>网络</span>
+        <select id="s-proxy"><option value="auto">自动（直连失败走本地代理）</option><option value="off">仅直连</option><option value="http://127.0.0.1:7897">127.0.0.1:7897</option><option value="http://127.0.0.1:7890">127.0.0.1:7890</option><option value="http://127.0.0.1:10809">127.0.0.1:10809</option></select>
+      </label>
+      <p class="muted small">数据来自 Open-Meteo 开放接口（无需注册与密钥）。城市与缓存只保存在本机，不上传任何信息。</p>
+    </div>
+    <div class="panel-f"><button id="s-close" class="primary">完成</button></div>
+  </div>
+
+  <script src="fixture.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

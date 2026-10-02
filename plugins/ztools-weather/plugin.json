@@ -1,0 +1,48 @@
+{
+  "name": "ztools-weather",
+  "title": "天气助手",
+  "description": "多城市实时天气、24 小时逐时预报、7 天趋势与空气质量，无需注册和 API Key",
+  "author": "zhanglei",
+  "version": "1.0.0",
+  "logo": "logo.png",
+  "main": "index.html",
+  "preload": "preload.js",
+  "platform": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "pluginSetting": {
+    "single": true,
+    "height": 620
+  },
+  "features": [
+    {
+      "code": "weather",
+      "explain": "打开天气面板（多城市实时天气 / 24 小时 / 7 天 / 空气质量）",
+      "icon": "logo.png",
+      "cmds": [
+        "天气",
+        "weather",
+        "天气助手",
+        "天气预报",
+        "气温",
+        "下雨"
+      ]
+    },
+    {
+      "code": "weather-push",
+      "explain": "在主搜索框直接搜索已保存的城市并切换",
+      "icon": "logo.png",
+      "mainPush": true,
+      "cmds": [
+        {
+          "type": "over",
+          "label": "切换到该城市天气",
+          "minLength": 1,
+          "maxLength": 30
+        }
+      ]
+    }
+  ]
+}
