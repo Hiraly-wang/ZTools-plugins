@@ -1,4 +1,5 @@
 import type { FieldDef, FieldValue, FieldType } from '../types/table.ts'
+import { hasOptions } from '../types/table.ts'
 import { DEFAULT_MULTI_SEP, splitMultiValue } from './separators.ts'
 
 export const FIELD_TYPE_LABELS: Record<FieldType, string> = {
@@ -30,6 +31,32 @@ export function defaultValue(type: FieldType): FieldValue {
     default:
       return ''
   }
+}
+
+/** 新建行时取字段默认值：配置了 default 用之，否则按类型给空值 */
+export function initialFieldDefault(field: FieldDef): FieldValue {
+  if (field.default !== undefined) return field.default
+  return defaultValue(field.type)
+}
+
+/**
+ * 新增字段回填已有数据：field.default 存在且非空时，把该值写进「缺失该字段」的行。
+ * 返回新行数组与被改写的行数；无变化返回 null。
+ */
+export function backfillField<T extends { values: Record<string, FieldValue> }>(
+  rows: T[],
+  field: FieldDef
+): { rows: T[]; changedRows: number } | null {
+  const v = field.default
+  // 空串 / null / undefined / 空数组都视为「未设置默认值」，不回填
+  if (v == null || v === '' || (Array.isArray(v) && !v.length)) return null
+  let changedRows = 0
+  const next = rows.map((r) => {
+    if (r.values[field.id] !== undefined) return r
+    changedRows += 1
+    return { ...r, values: { ...r.values, [field.id]: v } }
+  })
+  return changedRows ? { rows: next, changedRows } : null
 }
 
 export function createField(name: string, type: FieldType): FieldDef {
@@ -111,4 +138,88 @@ export function searchTextOf(
     .map((f) => displayValue(f, values[f.id] ?? defaultValue(f.type), multiSep))
     .join(' ')
     .toLowerCase()
+}
+
+/**
+ * 一个值在某字段下会拆成哪些候选选项：单选取整串，多选/列表按「、 ， , |」拆分。
+ * 与 coerceFieldValue 同一套语义，保证「选项」和「转换后真正存下的值」能对上。
+ */
+function optionCandidates(field: FieldDef, value: FieldValue | undefined): string[] {
+  if (value == null || value === '') return []
+  const coerced = coerceFieldValue(field, value)
+  const list = Array.isArray(coerced) ? coerced : coerced === '' ? [] : [String(coerced)]
+  return list.map((s) => String(s).trim()).filter(Boolean)
+}
+
+/**
+ * 把某个值收进单选/多选的选项列表（会就地修改 field.options）。
+ * 返回是否新增了选项。
+ */
+export function addFieldOptions(field: FieldDef, value: FieldValue): boolean {
+  if (!hasOptions(field)) return false
+  let changed = false
+  for (const s of optionCandidates(field, value)) {
+    if (field.options.includes(s)) continue
+    field.options.push(s)
+    changed = true
+  }
+  return changed
+}
+
+/**
+ * 收集某字段在已有行里的全部不同取值（按出现顺序去重，跳过空值）。
+ * 「文本 → 单选/多选」时用它生成选项，转换后已有数据不会变成下拉里选不到的值。
+ */
+export function collectFieldOptions(
+  rows: Array<{ values: Record<string, FieldValue> }>,
+  field: FieldDef
+): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const row of rows) {
+    for (const s of optionCandidates(field, row.values[field.id])) {
+      if (seen.has(s)) continue
+      seen.add(s)
+      out.push(s)
+    }
+  }
+  return out
+}
+
+/** 值相等判定：数组逐项比较，其余用 === */
+function sameFieldValue(a: FieldValue | undefined, b: FieldValue): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((v, i) => v === b[i])
+  }
+  return a === b
+}
+
+/**
+ * 字段改了类型后，按新类型转换已有行的值（只处理 fieldIds 指定的字段）。
+ * 返回新行数组与被改写的行数；全部无变化返回 null。
+ * 有意不动行上的 updatedAt：类型迁移属于结构调整，不该把「修改时间」列全部刷新。
+ */
+export function coerceRowsToFields<T extends { values: Record<string, FieldValue> }>(
+  rows: T[],
+  fields: FieldDef[],
+  fieldIds: string[]
+): { rows: T[]; changedRows: number } | null {
+  const targets = fields.filter((f) => fieldIds.includes(f.id))
+  if (!targets.length) return null
+  let changedRows = 0
+  const next = rows.map((row) => {
+    let values: Record<string, FieldValue> | null = null
+    for (const f of targets) {
+      const raw = row.values[f.id]
+      const coerced = coerceFieldValue(f, raw)
+      if (sameFieldValue(raw, coerced)) continue
+      values = values ?? { ...row.values }
+      values[f.id] = coerced
+    }
+    if (!values) return row
+    changedRows += 1
+    return { ...row, values }
+  })
+  return changedRows ? { rows: next, changedRows } : null
 }

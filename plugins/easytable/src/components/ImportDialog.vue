@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { Row, TableSchema } from '../types/table'
-import { defaultValue } from '../domain/fieldTypes'
+import { initialFieldDefault, addFieldOptions } from '../domain/fieldTypes'
 import {
   autoColumnMap,
   mapRowValues,
@@ -80,11 +80,8 @@ async function confirmImport() {
   importing.value = true
   const now = Date.now()
   const incoming: Row[] = dataRows.value.map((cells, i) => {
+    // mapRowValues 已按字段预填默认值（initialFieldDefault），未映射列也会带上
     const values = mapRowValues(props.table.fields, headers.value, cells, columnMap.value)
-    // 补全默认值
-    for (const f of props.table.fields) {
-      if (!(f.id in values)) values[f.id] = defaultValue(f.type)
-    }
     return {
       id: generateId('row'),
       tableId: props.table.id,
@@ -100,16 +97,8 @@ async function confirmImport() {
     let schemaChanged = false
     const table = props.table
     for (const f of table.fields) {
-      if (f.type !== 'select' && f.type !== 'multi_select') continue
       for (const row of incoming) {
-        const v = row.values[f.id]
-        const list = Array.isArray(v) ? v : v != null && v !== '' ? [String(v)] : []
-        for (const opt of list) {
-          if (opt && !f.options.includes(opt)) {
-            f.options.push(opt)
-            schemaChanged = true
-          }
-        }
+        if (addFieldOptions(f, row.values[f.id])) schemaChanged = true
       }
     }
     if (schemaChanged) store.updateTableSchema({ ...table, fields: [...table.fields] })

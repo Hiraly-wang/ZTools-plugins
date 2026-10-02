@@ -2,13 +2,15 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FieldDef, FieldValue, Row, TableSchema } from '../types/table'
-import { defaultValue } from '../domain/fieldTypes'
+import { defaultValue, initialFieldDefault, addFieldOptions, collectFieldOptions } from '../domain/fieldTypes'
 import { hasOptions } from '../types/table'
 import { generateId } from '../utils/id'
 
 const props = defineProps<{
   tables: TableSchema[]
   quickTableId: string
+  /** 各表行数据：单选/多选下拉要能选到已有数据里出现过的值 */
+  rowsByTable?: Record<string, Row[]>
   prefillText?: string
 }>()
 
@@ -29,7 +31,7 @@ function fill() {
   Object.keys(form).forEach((k) => delete form[k])
   if (!t) return
   for (const f of t.fields) {
-    form[f.id] = defaultValue(f.type)
+    form[f.id] = initialFieldDefault(f)
   }
   if (props.prefillText) {
     const target = t.fields.find((f) => f.type === 'text')
@@ -63,11 +65,24 @@ function multiValue(f: FieldDef): string[] {
   return Array.isArray(v) ? v : []
 }
 
-function addOption(f: FieldDef, raw: string | number | undefined) {
-  if (!hasOptions(f)) return
-  const s = String(raw ?? '')
-  if (!s || f.options.includes(s)) return
-  f.options.push(s)
+/** 当前表已有行里出现过的单选/多选取值（扫一次缓存住） */
+const rowValues = computed(() => {
+  const map = new Map<string, string[]>()
+  const t = table.value
+  if (!t) return map
+  const rows = props.rowsByTable?.[t.id] ?? []
+  for (const f of t.fields) {
+    if (hasOptions(f)) map.set(f.id, collectFieldOptions(rows, f))
+  }
+  return map
+})
+
+/** 下拉候选项 = 已存选项 ∪ 已有行取值 */
+function optionsOf(f: FieldDef): string[] {
+  if (!hasOptions(f)) return []
+  const merged = new Set(f.options)
+  for (const v of rowValues.value.get(f.id) ?? []) merged.add(v)
+  return [...merged]
 }
 
 function save() {
@@ -150,12 +165,12 @@ function cancel() {
           @update:model-value="
             (v: Array<string | number>) => {
               form[f.id] = v.map(String)
-              v.forEach((x) => addOption(f, x))
+              v.forEach((x) => addFieldOptions(f, x))
             }
           "
         >
           <el-option
-            v-for="item in f.type === 'multi_select' ? f.options : multiValue(f)"
+            v-for="item in f.type === 'multi_select' ? optionsOf(f) : multiValue(f)"
             :key="item"
             :label="item"
             :value="item"
@@ -170,9 +185,9 @@ function cancel() {
           clearable
           placeholder="选择或输入"
           style="width: 100%"
-          @change="(v: string | number) => addOption(f, v)"
+          @change="(v: string | number) => addFieldOptions(f, v)"
         >
-          <el-option v-for="opt in f.options" :key="opt" :label="opt" :value="opt" />
+          <el-option v-for="opt in optionsOf(f)" :key="opt" :label="opt" :value="opt" />
         </el-select>
         <el-input-number
           v-else-if="f.type === 'number'"

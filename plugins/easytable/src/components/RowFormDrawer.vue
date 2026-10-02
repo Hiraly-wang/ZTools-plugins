@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import type { FieldDef, FieldValue, Row, TableSchema } from '../types/table'
-import { defaultValue } from '../domain/fieldTypes'
+import { defaultValue, initialFieldDefault, collectFieldOptions, addFieldOptions } from '../domain/fieldTypes'
 import { DEFAULT_MULTI_SEP, splitMultiValue } from '../domain/separators'
 import { hasOptions } from '../types/table'
 
@@ -9,6 +9,8 @@ const props = defineProps<{
   visible: boolean
   table: TableSchema
   row: Row | null
+  /** 当前表的全部行：单选/多选下拉要能选到已有数据里出现过的值 */
+  rows?: Row[]
   /** 新建时预填到第一个文本类字段（如启动参数里的 pm 号） */
   prefillText?: string
 }>()
@@ -24,20 +26,12 @@ function fillFromRow() {
   rowId.value = props.row?.id ?? null
   const values: Record<string, FieldValue> = {}
   for (const f of props.table.fields) {
-    values[f.id] = props.row?.values?.[f.id] ?? defaultValue(f.type)
+    values[f.id] =
+      props.row?.values?.[f.id] ?? (props.row ? defaultValue(f.type) : initialFieldDefault(f))
   }
   if (!props.row && props.prefillText) {
     const target = props.table.fields.find((f) => f.type === 'text')
     if (target) values[target.id] = props.prefillText
-  }
-  // 保证 options 里能显示已选但不在列表中的值
-  for (const f of props.table.fields) {
-    if (!hasOptions(f)) continue
-    const cur = values[f.id]
-    const list = Array.isArray(cur) ? cur : cur != null && cur !== '' ? [String(cur)] : []
-    for (const v of list) {
-      if (v && !f.options.includes(v)) f.options.push(v)
-    }
   }
   Object.keys(form).forEach((k) => delete form[k])
   Object.assign(form, values)
@@ -50,6 +44,26 @@ watch(
   },
   { immediate: true }
 )
+
+/**
+ * 已有行里出现过的单选/多选取值（按字段算一次）。
+ * 放 computed 里是因为它要扫全表行数据，不能跟着每次渲染重算。
+ */
+const rowValues = computed(() => {
+  const map = new Map<string, string[]>()
+  for (const f of props.table.fields) {
+    if (hasOptions(f)) map.set(f.id, collectFieldOptions(props.rows ?? [], f))
+  }
+  return map
+})
+
+/** 下拉候选项 = 已存选项 ∪ 已有行取值：任何在表里出现过的值都必须在列表里可选 */
+function optionsOf(f: FieldDef): string[] {
+  if (!hasOptions(f)) return []
+  const merged = new Set(f.options)
+  for (const v of rowValues.value.get(f.id) ?? []) merged.add(v)
+  return [...merged]
+}
 
 function listText(f: FieldDef): string {
   const v = form[f.id]
@@ -81,13 +95,6 @@ function toggleMulti(f: FieldDef, opt: string) {
   if (cur.has(opt)) cur.delete(opt)
   else cur.add(opt)
   form[f.id] = [...cur]
-}
-
-function addOption(f: FieldDef, raw: string | number | undefined) {
-  if (!hasOptions(f)) return
-  const s = String(raw ?? '').trim()
-  if (!s || f.options.includes(s)) return
-  f.options.push(s)
 }
 </script>
 
@@ -136,9 +143,9 @@ function addOption(f: FieldDef, raw: string | number | undefined) {
           clearable
           placeholder="选择或输入"
           style="width: 100%"
-          @change="(v: string | number) => addOption(f, v)"
+          @change="(v: string | number) => addFieldOptions(f, v)"
         >
-          <el-option v-for="opt in f.options" :key="opt" :label="opt" :value="opt" />
+          <el-option v-for="opt in optionsOf(f)" :key="opt" :label="opt" :value="opt" />
         </el-select>
         <!-- 多选 -->
         <div v-else-if="f.type === 'multi_select'" class="list-editor">
@@ -151,9 +158,9 @@ function addOption(f: FieldDef, raw: string | number | undefined) {
             clearable
             placeholder="选择或输入后回车"
             style="width: 100%"
-            @update:model-value="(v: Array<string | number>) => { form[f.id] = v.map(String); v.forEach(x => addOption(f, x)) }"
+            @update:model-value="(v: Array<string | number>) => { form[f.id] = v.map(String); v.forEach(x => addFieldOptions(f, x)) }"
           >
-            <el-option v-for="opt in f.options" :key="opt" :label="opt" :value="opt" />
+            <el-option v-for="opt in optionsOf(f)" :key="opt" :label="opt" :value="opt" />
           </el-select>
           <div class="tag-row">
             <el-tag

@@ -1,19 +1,32 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import TableView from './components/TableView.vue'
 import QuickRecord from './components/QuickRecord.vue'
 import { useStore } from './composables/useStore'
+import { addFieldOptions } from './domain/fieldTypes'
 import type { Row } from './types/table'
 
 const store = useStore()
-const { tables, meta, ensureBootstrapped, setQuickTableId, createRow, updateTableSchema, reloadRows } = store
+const {
+  tables,
+  meta,
+  ensureBootstrapped,
+  setQuickTableId,
+  createRow,
+  updateTableSchema,
+  reloadRows,
+  collectAllRows
+} = store
 
 const mode = ref<'main' | 'quick'>('main')
 const tableRef = ref<InstanceType<typeof TableView> | null>(null)
 const prefill = ref('')
 
 ensureBootstrapped()
+
+/** 各表行数据：给「记一笔」的单选/多选下拉提供已有取值 */
+const rowsByTable = computed(() => collectAllRows())
 
 function onQuickChangeTable(id: string) {
   setQuickTableId(id)
@@ -25,15 +38,7 @@ function onQuickSave(row: Row) {
   if (t) {
     let changed = false
     for (const f of t.fields) {
-      if (f.type !== 'select' && f.type !== 'multi_select') continue
-      const v = row.values[f.id]
-      const list = Array.isArray(v) ? v : v != null && v !== '' ? [String(v)] : []
-      for (const opt of list) {
-        if (opt && !f.options.includes(opt)) {
-          f.options.push(opt)
-          changed = true
-        }
-      }
+      if (addFieldOptions(f, row.values[f.id])) changed = true
     }
     if (changed) updateTableSchema({ ...t, fields: [...t.fields] })
   }
@@ -76,6 +81,7 @@ onMounted(() => {
     v-if="mode === 'quick'"
     :tables="tables"
     :quick-table-id="meta.quickTableId || tables[0]?.id || ''"
+    :rows-by-table="rowsByTable"
     :prefill-text="prefill"
     @change-table="onQuickChangeTable"
     @save="onQuickSave"
