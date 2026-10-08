@@ -45,7 +45,37 @@ test('user-created ADB command preserves its trailing space and becomes searchab
   const connect = api.list().find(command => command.id === 'adb-connect');
   assert.ok(connect, 'first launch should include ADB connect');
   assert.equal(connect.text, 'adb connect ');
-  assert.deepEqual(host.features.get('quick-input-adb-connect').cmds, ['输入 adb connect']);
+  const trigger = host.features.get('quick-input-adb-connect').cmds[0];
+  assert.equal(trigger.type, 'regex');
+  assert.equal(trigger.label, '输入 adb connect');
+});
+
+test('input commands stay bindable by the same label but use match commands that avoid individual recent entries', () => {
+  const host = makeHost();
+  host.features.set('quick-input-adb-connect', { code: 'quick-input-adb-connect', explain: 'ADB 连接 · 快捷输入', cmds: ['输入 adb connect'], mainHide: true });
+  createQuickInput(host);
+  for (const feature of host.features.values()) {
+    const trigger = feature.cmds[0];
+    assert.equal(trigger.type, 'regex');
+    assert.equal(typeof trigger.label, 'string');
+    assert.equal(feature.mainHide, true);
+  }
+  assert.equal(host.features.get('quick-input-adb-connect').cmds[0].label, '输入 adb connect');
+});
+
+test('a keyword containing regex symbols only matches that literal keyword', () => {
+  const host = makeHost();
+  const api = createQuickInput(host);
+  const saved = api.save({ ...custom, keyword: '手机 (A)+[1].$?^|{}\\' });
+  const trigger = host.features.get('quick-input-' + saved.id).cmds[0];
+  assert.equal(trigger.type, 'regex');
+  const end = trigger.match.lastIndexOf('/');
+  const regex = new RegExp(trigger.match.slice(1, end), trigger.match.slice(end + 1));
+  assert.equal(regex.test('手机 (A)+[1].$?^|{}\\'), true);
+  assert.equal(regex.test('手机 (a)+[1].$?^|{}\\'), true);
+  assert.equal(regex.test('手机 A1'), false);
+  assert.equal(regex.test('x手机 (A)+[1].$?^|{}\\'), false);
+  assert.equal(regex.test('手机 (A)+[1].$?^|{}\\x'), false);
 });
 
 test('a saved command survives restart and keeps its feature code after editing', () => {
@@ -146,11 +176,11 @@ test('registration failure rolls storage and features back to the previous comma
   const api = createQuickInput(host);
   const before = api.list();
   const originalSetFeature = host.setFeature.bind(host);
-  host.setFeature = feature => feature.cmds[0] === custom.keyword ? false : originalSetFeature(feature);
+  host.setFeature = feature => (feature.cmds[0].label || feature.cmds[0]) === custom.keyword ? false : originalSetFeature(feature);
   assert.throws(() => api.save(custom), /注册|同步/);
   assert.deepEqual(api.list(), before);
   assert.deepEqual(createQuickInput(host).list(), before);
-  assert.equal([...host.features.values()].some(feature => feature.cmds[0] === custom.keyword), false);
+  assert.equal([...host.features.values()].some(feature => (feature.cmds[0].label || feature.cmds[0]) === custom.keyword), false);
 });
 
 test('ZTools 3.2 object-shaped registration failures roll back the saved command', () => {
@@ -159,7 +189,7 @@ test('ZTools 3.2 object-shaped registration failures roll back the saved command
   const before = api.list();
   const originalSetFeature = host.setFeature.bind(host);
   host.setFeature = feature => {
-    if (feature.cmds[0] === custom.keyword) return { success: false, error: 'conflicting command' };
+    if ((feature.cmds[0].label || feature.cmds[0]) === custom.keyword) return { success: false, error: 'conflicting command' };
     originalSetFeature(feature);
     return { success: true };
   };
@@ -180,7 +210,7 @@ test('storage failure leaves the command and its existing shortcut untouched', (
   host.dbStorage.setItem = () => { throw new Error('disk full'); };
   assert.throws(() => api.save(custom), /disk full/);
   assert.deepEqual(api.list(), before);
-  assert.equal([...host.features.values()].some(feature => feature.cmds[0] === custom.keyword), false);
+  assert.equal([...host.features.values()].some(feature => (feature.cmds[0].label || feature.cmds[0]) === custom.keyword), false);
 });
 
 test('ZTools object-shaped storage errors leave registered commands untouched', () => {
@@ -190,7 +220,7 @@ test('ZTools object-shaped storage errors leave registered commands untouched', 
   host.dbStorage.setItem = () => ({ error: 'disk full' });
   assert.throws(() => api.save(custom), /保存|disk full/u);
   assert.deepEqual(api.list(), before);
-  assert.equal([...host.features.values()].some(feature => feature.cmds[0] === custom.keyword), false);
+  assert.equal([...host.features.values()].some(feature => (feature.cmds[0].label || feature.cmds[0]) === custom.keyword), false);
 });
 
 test('unsupported typing and explicit native failure are surfaced without clipboard fallback', async () => {

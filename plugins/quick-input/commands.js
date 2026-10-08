@@ -55,7 +55,14 @@
       const wanted = next.filter(command => command.enabled).map(command => ({
         code: FEATURE_PREFIX + command.id,
         explain: command.name + ' · 快捷输入',
-        cmds: [command.keyword],
+        // Matching commands remain valid shortcut targets by label. Unlike text
+        // commands, ZTools does not add each one to its recent-command tiles.
+        cmds: [{
+          type: 'regex',
+          label: command.keyword,
+          match: '/^' + command.keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$/i',
+          minLength: command.keyword.length,
+        }],
         mainHide: true,
       }));
       const wantedCodes = new Set(wanted.map(feature => feature.code));
