@@ -56,6 +56,7 @@
         code: FEATURE_PREFIX + command.id,
         explain: command.name + ' · 快捷输入',
         cmds: [command.keyword],
+        mainHide: true,
       }));
       const wantedCodes = new Set(wanted.map(feature => feature.code));
       for (const feature of current) {
@@ -65,7 +66,7 @@
       }
       for (const feature of wanted) {
         const existing = current.find(item => item.code === feature.code);
-        if (existing?.explain === feature.explain && JSON.stringify(existing.cmds) === JSON.stringify(feature.cmds)) continue;
+        if (existing?.mainHide === true && existing.explain === feature.explain && JSON.stringify(existing.cmds) === JSON.stringify(feature.cmds)) continue;
         const result = host.setFeature(feature);
         if (result === false || result?.success === false) throw new Error('注册命令功能失败，请检查触发词是否冲突。');
       }
@@ -129,8 +130,17 @@
     async function type(id) {
       const command = find(id, true);
       if (typeof host.hideMainWindowTypeString !== 'function') throw new Error('当前 ZTools 版本不支持模拟输入，请更新 ZTools。');
-      // The native API restores focus and types the string. No clipboard or Return key.
-      if (await host.hideMainWindowTypeString(command.text) === false) throw new Error('模拟输入失败，请确认目标窗口有可输入的光标。');
+      if (typeof host.hideMainWindow !== 'function') throw new Error('当前 ZTools 版本不支持焦点恢复，请更新 ZTools。');
+      if (typeof host.outPlugin !== 'function') throw new Error('当前 ZTools 版本不支持退出插件，请更新 ZTools。');
+      if (await host.hideMainWindow(true) === false) throw new Error('隐藏 ZTools 窗口失败。');
+      // ZTools 3.2 types immediately inside its combined API. Hide first and allow
+      // the OS focus change and a normal shortcut key release to settle.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const latest = find(command.id, true);
+      if (await host.hideMainWindowTypeString(latest.text) === false) throw new Error('模拟输入失败，请确认目标窗口有可输入的光标。');
+      // Merely hiding leaves the same text feature active; ZTools then suppresses
+      // the next onPluginEnter. Detach this invocation while keeping the cache.
+      if (await host.outPlugin(false) === false) throw new Error('文字已输入，但退出插件失败，请重新打开插件。');
     }
 
     async function bind(id) {

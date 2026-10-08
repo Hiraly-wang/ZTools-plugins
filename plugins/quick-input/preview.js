@@ -17,6 +17,8 @@
       setFeature: feature => { features.set(feature.code, feature); return true; },
       removeFeature: code => features.delete(code),
       hideMainWindowTypeString: requireZTools,
+      hideMainWindow: requireZTools,
+      outPlugin: requireZTools,
       redirectHotKeySetting: requireZTools,
       copyText: requireZTools,
     });

@@ -23,6 +23,8 @@ function makeHost(seed = fixtures) {
     getFeatures: () => [...features.values()],
     setFeature(feature) { features.set(feature.code, structuredClone(feature)); return true; },
     removeFeature(code) { return features.delete(code); },
+    hideMainWindow(restoreFocus) { effects.push(['hide', restoreFocus]); },
+    outPlugin(kill) { effects.push(['out', kill]); return true; },
     hideMainWindowTypeString(text) { effects.push(['type', text]); },
     redirectHotKeySetting(label) { effects.push(['bind', label]); },
     copyText(text) { effects.push(['copy', text]); },
@@ -64,7 +66,33 @@ test('typing sends exactly the saved string and adds no Return key', async () =>
   const saved = api.save({ ...custom, text: '  adb connect 中文设备 %PATH% +{} ' });
   assert.ok(saved?.id, 'saving should create a command');
   await api.type(saved.id);
-  assert.deepEqual(host.effects, [['type', '  adb connect 中文设备 %PATH% +{} ']]);
+  assert.deepEqual(host.effects, [['hide', true], ['type', '  adb connect 中文设备 %PATH% +{} '], ['out', false]]);
+});
+
+test('global shortcut commands launch in the background and upgrade previously visible features', () => {
+  const host = makeHost();
+  const api = createQuickInput(host);
+  const feature = host.features.get('quick-input-adb-connect');
+  delete feature.mainHide;
+  api.refresh();
+  assert.equal(host.features.get('quick-input-adb-connect').mainHide, true);
+});
+
+test('input reaches the external app after hiding and settling focus, rather than being lost in ZTools', async () => {
+  const host = makeHost();
+  const api = createQuickInput(host);
+  let externalFocus = false;
+  let timer;
+  host.hideMainWindow = () => { timer = setTimeout(() => { externalFocus = true; }, 30); };
+  host.hideMainWindowTypeString = text => {
+    if (!externalFocus) return false;
+    host.effects.push(['external-input', text]);
+    return true;
+  };
+  try {
+    await api.type('adb-connect');
+    assert.deepEqual(host.effects, [['external-input', 'adb connect '], ['out', false]]);
+  } finally { clearTimeout(timer); }
 });
 
 test('binding uses the registered keyword, including APIs that return void', async () => {
@@ -172,7 +200,7 @@ test('unsupported typing and explicit native failure are surfaced without clipbo
   await assert.rejects(() => api.type('adb-connect'), /不支持|版本/);
   host.hideMainWindowTypeString = () => false;
   await assert.rejects(() => api.type('adb-connect'), /失败/);
-  assert.deepEqual(host.effects, []);
+  assert.deepEqual(host.effects, [['hide', true]]);
 });
 
 test('listing cannot modify persisted commands through returned references', () => {
